@@ -165,8 +165,10 @@ LLM_TIMEOUT_SECONDS=120
 
 Local Ollama requires no API key. Other compatible servers can use their own URL,
 exact vision-model identifier, and optional bearer key. A remote endpoint receives
-the story images and extracted links. The code has been tested against mocked HTTP
-responses; actual model-server compatibility/inference needs a live run.
+the story images and extracted links. HTTP contract tests use mocked responses.
+A one-story MP4 smoke test also completed against local `gemma3:4b`; this verifies
+API integration and valid output, not model accuracy. Qwen inference still needs
+a live run after that model is installed.
 
 Preview inputs without calling a model, then classify a small batch:
 
