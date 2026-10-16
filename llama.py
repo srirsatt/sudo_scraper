@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 import requests
 from media import story_images
 
-PROMPT_VERSION = "swe-internship-v2"
+PROMPT_VERSION = "swe-internship-v3"
 
 
 class Decision(BaseModel):
@@ -84,6 +84,16 @@ irrelevant: news, advice, memes, promotions, courses, interview prep, full-time 
 or clearly non-software internships. A company name or a link alone is insufficient.
 uncertain: blurry/unreadable content, unclear role/employment type, ambiguous
 continuations, or insufficient evidence. Do not assume hiring news is an opening.
+
+A positive decision requires TWO separate facts visible in the supplied material:
+(1) the role itself is software engineering/development, and (2) it is an internship
+or co-op. Quote evidence for both. A technology company does not make every job SWE.
+Product Manager / Product Management MBA Intern is IRRELEVANT, including at Duolingo
+or NVIDIA. Engineer I, entry-level, new-grad, and validation engineer titles alone
+do NOT establish an internship. If internship status isn't visible, use UNCERTAIN.
+An internship can have a full-time hours label; that label alone does not mean a
+permanent job. For unrelated advice/PSAs, company and role must be null: don't copy
+those fields from a neighboring job story.
 
 Video images are sampled frames, not a full video or audio transcript. Do not
 claim to hear audio or to have inspected frames that were not supplied.

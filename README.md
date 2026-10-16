@@ -192,6 +192,21 @@ percentage. The prompt asks the model to distinguish actual software internship
 openings from hiring news, advice, promotions, and full-time roles. Accuracy still
 needs manual evaluation against real stories; valid JSON doesn't prove correctness.
 
+An output review found false positives for product-management MBA internships and
+an Engineer I job without internship evidence. The prompt now explicitly separates
+role type from internship status. Before accepting any positive label, a small
+eligibility check requires software-role wording in the title and quoted evidence,
+plus explicit internship/co-op wording in that evidence. Product/program/project
+management titles are excluded. Weak positives become `uncertain`; these checks
+are conservative and may send valid but unusually worded roles to manual review.
+They don't independently prove that a model's evidence matches the image.
+
+Each result retains `model_decision` before eligibility/video policy changes, the
+final `decision`, and `policy_notes`. This makes a video's downgrade from an
+irrelevant model decision to uncertain review status explicit. Updating prompt or
+policy versions invalidates cached results. Review a mix of actual SWE openings
+and negatives before enabling automatic alerts.
+
 Numbered blocks explain the code:
 
 1. `llama.py` defines environment configuration and a strict output schema. The

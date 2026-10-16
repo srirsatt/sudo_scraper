@@ -10,6 +10,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 
 from dotenv import load_dotenv
 
@@ -18,6 +19,36 @@ from llama import Decision, ModelConfig, ModelOutputError, ModelUnavailable, PRO
 from media import IMAGE_SUFFIXES, MEDIA_VERSION, VIDEO_SUFFIXES, MediaError
 
 LOG = logging.getLogger("classifier")
+POLICY_VERSION = "swe-eligibility-v1"
+INTERNSHIP = re.compile(r"\b(?:intern(?:ship)?s?|co[ -]?op)\b", re.I)
+SOFTWARE_ROLE = re.compile(
+    r"\b(?:SWE|SDE)\b|\bsoftware\s+(?:engineer(?:ing)?|develop(?:er|ment)|intern)\b|"
+    r"\b(?:front[ -]?end|back[ -]?end|full[ -]?stack|mobile|iOS|Android|web)\s+(?:engineer(?:ing)?|develop(?:er|ment))\b",
+    re.I,
+)
+NON_SOFTWARE_ROLE = re.compile(
+    r"^(?:technical\s+)?(?:product|program|project)\s+(?:manager|management)\b|\bPM\s+MBA\b",
+    re.I,
+)
+
+
+def apply_eligibility_policy(decision):
+    """Require explicit supporting text before accepting a model's positive label."""
+    if decision.classification != "swe_internship":
+        return decision, []
+    evidence = " ".join(decision.evidence)
+    role = decision.role or ""
+    if NON_SOFTWARE_ROLE.search(role):
+        note = "The advertised role is product/program/project management, outside the SWE filter."
+        return decision.model_copy(update={"classification": "irrelevant", "reason": note}), [note]
+    notes = []
+    if not INTERNSHIP.search(evidence):
+        notes.append("Quoted evidence does not explicitly establish an internship or co-op.")
+    if not SOFTWARE_ROLE.search(role) or not SOFTWARE_ROLE.search(evidence):
+        notes.append("Role and quoted evidence do not explicitly establish software engineering/development.")
+    if notes:
+        return decision.model_copy(update={"classification": "uncertain", "reason": " ".join(notes)}), notes
+    return decision, []
 
 
 def load_stories(data_dir, target):
@@ -62,7 +93,7 @@ def nearby_images(stories, index):
 # 3. Cache keys cover the model, prompt, images, metadata, links, and context.
 def input_fingerprint(story, context, config):
     digest = hashlib.sha256()
-    digest.update(json.dumps([PROMPT_VERSION, SYSTEM_PROMPT, MEDIA_VERSION, config.base_url, config.model]).encode())
+    digest.update(json.dumps([PROMPT_VERSION, SYSTEM_PROMPT, MEDIA_VERSION, POLICY_VERSION, config.base_url, config.model]).encode())
     for item in [story, *context]:
         digest.update(json.dumps({k: v for k, v in item.items() if k != "media_path"}, sort_keys=True).encode())
         with item["media_path"].open("rb") as media:
@@ -120,14 +151,19 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
             counts["errors"] += 1
             LOG.error("Story %s: %s; result remains retryable", story["story_id"], message)
             continue
+        record["model_decision"] = decision.model_dump()
+        decision, notes = apply_eligibility_policy(decision)
+        record["policy_version"] = POLICY_VERSION
+        record["policy_notes"] = notes
         is_video = story["media_path"].suffix.lower() in VIDEO_SUFFIXES
         record["media_coverage"] = "sampled_frames_no_audio" if is_video else "image"
         # Sampled frames cannot establish that an entire video's content is irrelevant.
         if is_video and decision.classification == "irrelevant":
             decision = decision.model_copy(update={
                 "classification": "uncertain",
-                "reason": "Sampled frames appear irrelevant, but unsampled frames and audio are unreviewed. " + decision.reason[:700],
+                "reason": "Visible frames were classified as irrelevant. Unsampled frames and audio remain unreviewed.",
             })
+            record["policy_notes"].append("Video negatives are held for review because coverage is incomplete.")
         record["status"] = "complete"
         record["decision"] = decision.model_dump()
         record["review_required"] = decision.classification == "uncertain" or is_video

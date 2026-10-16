@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 from PIL import Image
 
-from classifier import classify_saved, load_stories, nearby_images
+from classifier import apply_eligibility_policy, classify_saved, load_stories, nearby_images
 from collector import read_json, write_json
 from llama import Decision, ModelConfig, ModelOutputError, ModelUnavailable, VisionClassifier, parse_decision
 from media import story_images
@@ -56,6 +56,41 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(record["status"], "complete")
         self.assertFalse(record["review_required"])
 
+    def test_product_manager_intern_is_not_accepted_as_swe(self):
+        for company in ("Duolingo", "NVIDIA"):
+            with self.subTest(company=company):
+                raw = Decision(
+                    classification="swe_internship", company=company,
+                    role="Product Manager, MBA Intern", evidence=["Product Manager, MBA Intern"],
+                    reason="Incorrect model positive from the reviewed stories.",
+                )
+                final, notes = apply_eligibility_policy(raw)
+                self.assertEqual(final.classification, "irrelevant")
+                self.assertTrue(notes)
+
+    def test_engineer_i_without_internship_evidence_needs_review(self):
+        raw = Decision(
+            classification="swe_internship", company="Amazon",
+            role="Post-Silicon Systems Validation Engineer I",
+            evidence=["Post-Silicon Systems Validation Engineer I", "Annapurna Labs"],
+            reason="Incorrect model positive from the reviewed stories.",
+        )
+        final, notes = apply_eligibility_policy(raw)
+        self.assertEqual(final.classification, "uncertain")
+        self.assertTrue(any("internship" in n for n in notes))
+
+    def test_explicit_software_internship_still_passes_policy(self):
+        final, notes = apply_eligibility_policy(internship())
+        self.assertEqual(final.classification, "swe_internship")
+        self.assertEqual(notes, [])
+
+    def test_fulltime_software_engineer_is_not_assumed_to_be_intern(self):
+        raw = Decision(
+            classification="swe_internship", company="Example", role="Software Engineer I",
+            evidence=["Software Engineer I", "Entry level"], reason="An entry-level opening.",
+        )
+        self.assertEqual(apply_eligibility_policy(raw)[0].classification, "uncertain")
+
     def test_cache_skips_unchanged_inputs(self):
         self.story()
         classify_saved(self.root, "example", self.model)
@@ -94,6 +129,7 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(result["media_coverage"], "sampled_frames_no_audio")
         self.assertTrue(result["review_required"])
         self.model.classify.assert_called_once()
+        self.assertEqual(result["model_decision"]["classification"], "swe_internship")
 
     def test_video_negative_is_uncertain_because_audio_is_unreviewed(self):
         self.story(video=True)
