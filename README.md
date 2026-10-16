@@ -39,7 +39,9 @@ INSTAGRAM_TARGET=zero2sudo
 COLLECTOR_DATA_DIR=data
 
 LLM_BASE_URL=http://127.0.0.1:11434/v1
+LLM_API_STYLE=ollama
 LLM_MODEL=qwen3-vl:8b
+LLM_CONTEXT_LENGTH=16384
 LLM_API_KEY=
 LLM_TIMEOUT_SECONDS=120
 ```
@@ -58,6 +60,9 @@ ollama pull qwen3-vl:8b
 If you use the CLI without the application, run `ollama serve` in another terminal.
 Local Ollama needs no API key. Use **Qwen3-VL**, since regular Qwen3 is text-only.
 Other compatible vision models can be selected with `LLM_MODEL` or `--model`.
+Native Ollama requests a 16K context window so story frames and nearby context fit.
+For another OpenAI-compatible server, set `LLM_API_STYLE=openai`, use its `/v1` URL,
+and configure the context size on that server instead.
 
 ## Collect stories
 
@@ -167,6 +172,8 @@ rejected. An empty link list does not prove that no application link exists.
   `ollama list`, and `LLM_BASE_URL` includes `/v1`.
 - **Inference times out:** Increase `LLM_TIMEOUT_SECONDS` in `.env` or try a smaller
   vision model. Failed classifications remain retryable.
+- **Request exceeds context size:** Use `LLM_API_STYLE=ollama` and increase
+  `LLM_CONTEXT_LENGTH` if needed. A larger context uses more memory.
 - **No stories found:** Check `INSTAGRAM_TARGET`, `COLLECTOR_DATA_DIR`, and whether
   collection completed successfully.
 
