@@ -5,20 +5,17 @@ Use a vision model such as Qwen3-VL; ordinary text-only Qwen3 cannot read images
 """
 
 # 1. Configuration and the strict response format shared by all classifier calls.
-import base64
 from dataclasses import dataclass
-from io import BytesIO
 import json
 import os
-from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from PIL import Image, ImageOps
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 import requests
+from media import story_images
 
-PROMPT_VERSION = "swe-internship-v1"
+PROMPT_VERSION = "swe-internship-v2"
 
 
 class Decision(BaseModel):
@@ -68,6 +65,10 @@ class ModelUnavailable(RuntimeError):
 class ModelOutputError(ValueError):
     """A model response failed parsing or schema validation; leave it retryable."""
 
+    def __init__(self, message, content=None):
+        super().__init__(message)
+        self.content = content
+
 
 # 2. Prompt: distinguish real openings from advice/news, and treat story text as data.
 SYSTEM_PROMPT = """You classify Instagram stories for software engineering internship alerts.
@@ -84,21 +85,12 @@ or clearly non-software internships. A company name or a link alone is insuffici
 uncertain: blurry/unreadable content, unclear role/employment type, ambiguous
 continuations, or insufficient evidence. Do not assume hiring news is an opening.
 
+Video images are sampled frames, not a full video or audio transcript. Do not
+claim to hear audio or to have inspected frames that were not supplied.
 Read the images directly. Quote short visible text excerpts in evidence. Leave
 company/role null when not established. Never infer an application URL. Respond
 with one JSON object, without markdown or analysis, matching this schema:
 """ + json.dumps(Decision.model_json_schema())
-
-
-# 3. Images: send normalized JPEGs inline; no server access to local paths is needed.
-def image_data_url(path: Path):
-    with Image.open(path) as source:
-        image = ImageOps.exif_transpose(source).convert("RGB")
-        image.thumbnail((2048, 2048))
-        buffer = BytesIO()
-        image.save(buffer, format="JPEG", quality=90)
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return "data:image/jpeg;base64," + encoded
 
 
 # 4. Response validation: malformed output is an error, never an irrelevant story.
@@ -111,7 +103,7 @@ def parse_decision(content):
     try:
         return Decision.model_validate(json.loads(text))
     except (ValueError, ValidationError) as exc:
-        raise ModelOutputError("The model returned invalid classification JSON.") from exc
+        raise ModelOutputError("The model returned invalid classification JSON.", content=content[:6000]) from exc
 
 
 # 5. HTTP call: one request, a bounded timeout, no automatic retries or tool calls.
@@ -128,9 +120,8 @@ class VisionClassifier:
                 "taken_at": item["metadata"].get("taken_at"),
                 "links": item.get("links", []),
             })})
-            content.append({"type": "image_url", "image_url": {
-                "url": image_data_url(item["media_path"]),
-            }})
+            for frame in story_images(item, context=item is not target):
+                content.append({"type": "image_url", "image_url": {"url": frame}})
         headers = {}
         if self.config.api_key:
             headers["Authorization"] = "Bearer " + self.config.api_key
@@ -147,7 +138,10 @@ class VisionClassifier:
                     "temperature": 0,
                     "max_tokens": 700,
                     "stream": False,
-                    "response_format": {"type": "json_object"},
+                    "response_format": {"type": "json_schema", "json_schema": {
+                        "name": "story_decision", "strict": True,
+                        "schema": Decision.model_json_schema(),
+                    }},
                 },
                 timeout=(10, self.config.timeout),
                 allow_redirects=False,
@@ -160,7 +154,7 @@ class VisionClassifier:
             body = response.json()
             choice = body["choices"][0]
             if choice.get("finish_reason") == "length":
-                raise ModelOutputError("The model response was truncated.")
+                raise ModelOutputError("The model response was truncated.", content=choice.get("message", {}).get("content", "")[:6000])
             return parse_decision(choice["message"]["content"])
         except (KeyError, IndexError, TypeError, requests.exceptions.JSONDecodeError) as exc:
             raise ModelOutputError("The server returned an unexpected response format.") from exc

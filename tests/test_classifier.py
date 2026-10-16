@@ -1,5 +1,6 @@
 """Offline pipeline/HTTP contract tests, not a benchmark of model accuracy."""
 import json
+import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -10,6 +11,8 @@ from PIL import Image
 from classifier import classify_saved, load_stories, nearby_images
 from collector import read_json, write_json
 from llama import Decision, ModelConfig, ModelOutputError, ModelUnavailable, VisionClassifier, parse_decision
+from media import story_images
+import imageio_ffmpeg
 
 
 def internship():
@@ -83,13 +86,39 @@ class ClassifierTests(unittest.TestCase):
         classify_saved(self.root, "example", self.model)
         self.assertEqual(read_json(path)["status"], "complete")
 
-    def test_video_is_flagged_without_a_model_call(self):
+    def test_video_positive_uses_model_and_keeps_coverage_warning(self):
         self.story(video=True)
         classify_saved(self.root, "example", self.model)
         result = read_json(self.root / "classifications/example/123.json")
+        self.assertEqual(result["decision"]["classification"], "swe_internship")
+        self.assertEqual(result["media_coverage"], "sampled_frames_no_audio")
+        self.assertTrue(result["review_required"])
+        self.model.classify.assert_called_once()
+
+    def test_video_negative_is_uncertain_because_audio_is_unreviewed(self):
+        self.story(video=True)
+        self.model.classify.return_value = Decision(
+            classification="irrelevant", company=None, role=None,
+            evidence=[], reason="No visible job posting.",
+        )
+        classify_saved(self.root, "example", self.model)
+        result = read_json(self.root / "classifications/example/123.json")
         self.assertEqual(result["decision"]["classification"], "uncertain")
-        self.assertEqual(result["status"], "needs_review")
-        self.model.classify.assert_not_called()
+
+    def test_heic_and_real_video_frames_decode(self):
+        folder = self.story()
+        heic = folder / "photo.heic"
+        Image.new("RGB", (64, 64), "white").save(heic)
+        self.assertEqual(len(story_images({"media_path": heic, "metadata": {}})), 1)
+        video = folder / "video.mp4"
+        subprocess.run([
+            imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", "-nostdin",
+            "-f", "lavfi", "-i", "color=c=white:s=64x64:d=2",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video),
+        ], check=True, capture_output=True, timeout=30)
+        story = {"media_path": video, "metadata": {"video_duration": 2}}
+        self.assertEqual(len(story_images(story)), 3)
+        self.assertEqual(len(story_images(story, context=True)), 1)
 
     def test_dry_run_does_not_call_model_or_write_results(self):
         self.story()

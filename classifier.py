@@ -3,6 +3,7 @@
 # 1. Load completed stories from disk. No Instagram login is needed here.
 import argparse
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -14,9 +15,9 @@ from dotenv import load_dotenv
 
 from collector import ROOT, collector_lock, read_json, write_json
 from llama import Decision, ModelConfig, ModelOutputError, ModelUnavailable, PROMPT_VERSION, SYSTEM_PROMPT, VisionClassifier
+from media import IMAGE_SUFFIXES, MEDIA_VERSION, VIDEO_SUFFIXES, MediaError
 
 LOG = logging.getLogger("classifier")
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 def load_stories(data_dir, target):
@@ -37,7 +38,7 @@ def load_stories(data_dir, target):
     return sorted(stories, key=lambda s: (s["metadata"].get("taken_at", ""), s["story_id"]))
 
 
-# 2. Context: at most one neighboring image on either side, within 30 minutes.
+# 2. Context: at most one neighboring story on either side, within 30 minutes.
 def nearby_images(stories, index):
     current = stories[index]
     context = []
@@ -45,7 +46,7 @@ def nearby_images(stories, index):
         if not 0 <= neighbor < len(stories):
             continue
         other = stories[neighbor]
-        if other["media_path"].suffix.lower() not in IMAGE_SUFFIXES:
+        if other["media_path"].suffix.lower() not in IMAGE_SUFFIXES | VIDEO_SUFFIXES:
             continue
         try:
             a = datetime.fromisoformat(current["metadata"]["taken_at"])
@@ -61,7 +62,7 @@ def nearby_images(stories, index):
 # 3. Cache keys cover the model, prompt, images, metadata, links, and context.
 def input_fingerprint(story, context, config):
     digest = hashlib.sha256()
-    digest.update(json.dumps([PROMPT_VERSION, SYSTEM_PROMPT, config.base_url, config.model]).encode())
+    digest.update(json.dumps([PROMPT_VERSION, SYSTEM_PROMPT, MEDIA_VERSION, config.base_url, config.model]).encode())
     for item in [story, *context]:
         digest.update(json.dumps({k: v for k, v in item.items() if k != "media_path"}, sort_keys=True).encode())
         with item["media_path"].open("rb") as media:
@@ -104,29 +105,32 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
             "input_fingerprint": fingerprint,
             "classified_at": datetime.now(timezone.utc).isoformat(),
         }
-        if story["media_path"].suffix.lower() not in IMAGE_SUFFIXES:
-            # Do not silently discard a video or pretend its first frame is enough.
-            decision = Decision(
-                classification="uncertain", company=None, role=None, evidence=[],
-                reason="Video/unsupported media requires review; frame extraction and audio transcription are not implemented.",
-            )
-            record["status"] = "needs_review"
-        else:
-            try:
-                decision = model.classify(story, context)
-            except ModelUnavailable:
-                record.update(status="error", error="Model server unavailable; retry after checking the server.")
-                write_json(output_path, record)
-                raise
-            except ModelOutputError as exc:
-                record.update(status="error", error=str(exc))
-                write_json(output_path, record)
-                counts["errors"] += 1
-                LOG.error("Story %s: %s", story["story_id"], exc)
-                continue
-            record["status"] = "complete"
+        try:
+            decision = model.classify(story, context)
+        except ModelUnavailable:
+            record.update(status="error", error="Model server unavailable; retry after checking the server.")
+            write_json(output_path, record)
+            raise
+        except (ModelOutputError, MediaError, OSError) as exc:
+            message = str(exc) if isinstance(exc, (ModelOutputError, MediaError)) else type(exc).__name__
+            record.update(status="error", error=message)
+            if isinstance(exc, ModelOutputError) and exc.content:
+                record["model_output"] = exc.content
+            write_json(output_path, record)
+            counts["errors"] += 1
+            LOG.error("Story %s: %s; result remains retryable", story["story_id"], message)
+            continue
+        is_video = story["media_path"].suffix.lower() in VIDEO_SUFFIXES
+        record["media_coverage"] = "sampled_frames_no_audio" if is_video else "image"
+        # Sampled frames cannot establish that an entire video's content is irrelevant.
+        if is_video and decision.classification == "irrelevant":
+            decision = decision.model_copy(update={
+                "classification": "uncertain",
+                "reason": "Sampled frames appear irrelevant, but unsampled frames and audio are unreviewed. " + decision.reason[:700],
+            })
+        record["status"] = "complete"
         record["decision"] = decision.model_dump()
-        record["review_required"] = decision.classification == "uncertain"
+        record["review_required"] = decision.classification == "uncertain" or is_video
         if decision.classification == "swe_internship" and not record["links"]:
             record["review_required"] = True
         write_json(output_path, record)
@@ -141,6 +145,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, help="Maximum uncached stories to process")
     parser.add_argument("--force", action="store_true", help="Reclassify cached stories")
+    parser.add_argument("--model", help="Override LLM_MODEL for this run")
     parser.add_argument("--dry-run", action="store_true", help="List pending inputs without calling a model")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
@@ -155,7 +160,10 @@ def main():
         data_dir = Path(os.getenv("COLLECTOR_DATA_DIR", "data")).expanduser()
         if not data_dir.is_absolute():
             data_dir = ROOT / data_dir
-        model = VisionClassifier(ModelConfig.from_env())
+        config = ModelConfig.from_env()
+        if args.model:
+            config = replace(config, model=args.model)
+        model = VisionClassifier(config)
         with collector_lock(data_dir):
             counts = classify_saved(data_dir, target, model, args.limit, args.force, args.dry_run)
         return 1 if counts["errors"] else 0

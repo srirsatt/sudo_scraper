@@ -1,7 +1,7 @@
 # Sudo scraper
 
 Collect zero2sudo's available Instagram stories locally, for a future SWE internship
-classifier and Telegram notifier. This first version only collects stories.
+classifier and Telegram notifier.
 The classifier stage now reads those saved stories and writes decisions locally;
 Telegram delivery is still pending.
 It uses the unofficial `instagrapi` client; Instagram can restrict access, and neither
@@ -173,6 +173,8 @@ Preview inputs without calling a model, then classify a small batch:
 ```sh
 python classifier.py --dry-run --limit 3
 python classifier.py --limit 3
+# Or use an already-installed local vision model without changing .env:
+python classifier.py --model gemma3:4b --limit 3
 ```
 
 Inspect `data/classifications/<target>/<story-id>.json` alongside each original
@@ -194,26 +196,30 @@ Numbered blocks explain the code:
    schema rejects extra fields and requires evidence for positive decisions.
 2. The system prompt defines what qualifies and treats story content as untrusted
    data. Neither tools nor browsing are enabled for the model.
-3. The image encoder corrects orientation and sends JPEGs with a maximum side of
-   2048 pixels as inline base64. Very small text may still be unreadable.
+3. `media.py` decodes images (including HEIC), corrects orientation, and sends JPEGs
+   with a maximum side of 2048 pixels as inline base64. It uses bundled FFmpeg to
+   sample video at the start, middle, and 90% point; context videos use one middle
+   frame. Without duration metadata it uses the first frame only. Very small text
+   and brief content between samples may be missed.
 4. The parser validates JSON; invalid responses remain errors, never negatives.
 5. The HTTP adapter makes one bounded request without automatic retries. Server
    failures stop the batch rather than retrying all remaining stories.
 
-`classifier.py` loads complete collector records, adds at most one image neighbor
+`classifier.py` loads complete collector records, adds at most one story neighbor
 on either side within 30 minutes, computes an input fingerprint, and writes each
 result atomically. Original application URLs are copied from the target story;
 the model cannot return invented URL fields. Context links aren't automatically
 assigned to another story, so confirmed openings without their own links are
 flagged for review. Cross-slide job/link association is future work.
 
-Completed image decisions are cached. A changed image, prompt, model, links,
+Completed decisions are cached. A changed media file, prompt, model, links,
 metadata, or neighboring context invalidates the result. Use `--force` to rerun
-unchanged inputs. Failed responses are retryable on the next invocation. Videos
-are recorded as `needs_review` / `uncertain` without a model call: frame extraction
-and speech transcription aren't implemented, so don't treat this version as full
-coverage of video stories. The classifier makes no Instagram requests and sends
-no Telegram messages.
+unchanged inputs. Failed responses are retryable on the next invocation. Video
+results carry `media_coverage: sampled_frames_no_audio` and `review_required: true`.
+A video negative is downgraded to `uncertain`, since sampled frames and no audio
+cannot establish that a whole video is irrelevant. Positive video decisions retain
+their visible evidence, but still warrant review. Speech transcription isn't
+implemented. The classifier makes no Instagram requests and sends no Telegram messages.
 
 Classifier tests cover the HTTP request format, output validation, caching, context
 changes, retries, and video handling. These are offline software checks, not a
