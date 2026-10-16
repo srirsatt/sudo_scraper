@@ -236,6 +236,93 @@ class ClassifierTests(unittest.TestCase):
                         model.classify(load_stories(self.root, "example")[0], [])
                 self.assertEqual(caught.exception.kind, expected)
 
+    def test_fireworks_preset_ignores_stale_local_settings_and_uses_key(self):
+        with patch.dict("os.environ", {
+            "LLM_PROVIDER": "fireworks", "FIREWORKS_API_KEY": "fireworks-test-key",
+            "FIREWORKS_MODEL": "accounts/fireworks/models/test-vision",
+            "LLM_BASE_URL": "http://localhost:11434/v1", "LLM_API_STYLE": "ollama",
+            "LLM_MODEL": "qwen3-vl:8b",
+        }, clear=True):
+            config = ModelConfig.from_env()
+        self.assertEqual(config.base_url, "https://api.fireworks.ai/inference/v1")
+        self.assertEqual(config.api_style, "openai")
+        self.assertEqual(config.model, "accounts/fireworks/models/test-vision")
+        self.assertNotIn("fireworks-test-key", repr(config))
+        self.story()
+        response = Mock(status_code=200)
+        response.json.return_value = {"choices": [{"finish_reason": "stop", "message": {"content": internship().model_dump_json()}}]}
+        with patch("llama.requests.post", return_value=response) as post:
+            VisionClassifier(config).classify(load_stories(self.root, "example")[0], [])
+        self.assertEqual(post.call_args.args[0], "https://api.fireworks.ai/inference/v1/chat/completions")
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer fireworks-test-key")
+        payload = post.call_args.kwargs["json"]
+        self.assertNotIn("options", payload)
+        self.assertEqual(payload["response_format"]["type"], "json_schema")
+
+    def test_fireworks_missing_key_or_model_fails_before_network(self):
+        cases = (
+            {"LLM_PROVIDER": "fireworks"},
+            {"LLM_PROVIDER": "fireworks", "FIREWORKS_API_KEY": "test"},
+            {"LLM_PROVIDER": "fireworks", "FIREWORKS_API_KEY": "test", "FIREWORKS_MODEL": "qwen3-vl:8b"},
+        )
+        with patch("llama.requests.post") as post:
+            for env in cases:
+                with self.subTest(env_keys=sorted(env)):
+                    with patch.dict("os.environ", env, clear=True):
+                        with self.assertRaises(ValueError):
+                            ModelConfig.from_env()
+            post.assert_not_called()
+
+    def test_local_preset_never_inherits_cloud_credentials(self):
+        with patch.dict("os.environ", {
+            "LLM_PROVIDER": "ollama", "LLM_API_KEY": "generic-cloud-key",
+            "FIREWORKS_API_KEY": "fireworks-key",
+        }, clear=True):
+            config = ModelConfig.from_env()
+        self.assertEqual(config.api_key, "")
+        self.assertEqual(config.timeout, 300)
+
+    def test_legacy_configs_remain_compatible(self):
+        with patch.dict("os.environ", {"LLM_MODEL": "gemma3:4b"}, clear=True):
+            self.assertEqual(ModelConfig.from_env().api_style, "ollama")
+        with patch.dict("os.environ", {
+            "LLM_API_STYLE": "openai", "LLM_MODEL": "vision-model",
+            "LLM_BASE_URL": "https://example.com/v1", "LLM_API_KEY": "test-key",
+        }, clear=True):
+            self.assertEqual(ModelConfig.from_env().provider, "custom")
+
+    def test_openai_preset_and_completion_budget(self):
+        self.story()
+        with patch.dict("os.environ", {
+            "LLM_PROVIDER": "openai", "OPENAI_API_KEY": "test-openai-key",
+            "OPENAI_MODEL": "test-vision-model", "LLM_BASE_URL": "http://localhost:11434/v1",
+        }, clear=True):
+            config = ModelConfig.from_env()
+        response = Mock(status_code=200)
+        response.json.return_value = {"choices": [{"finish_reason": "stop", "message": {"content": internship().model_dump_json()}}]}
+        with patch("llama.requests.post", return_value=response) as post:
+            VisionClassifier(config).classify(load_stories(self.root, "example")[0], [])
+        self.assertEqual(post.call_args.args[0], "https://api.openai.com/v1/chat/completions")
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["max_completion_tokens"], config.max_output_tokens)
+        self.assertNotIn("max_tokens", payload)
+        self.assertNotIn("temperature", payload)
+        self.assertFalse(payload["store"])
+
+    def test_auth_and_throttle_errors_stop_without_retry_or_fallback(self):
+        self.story()
+        model = VisionClassifier(ModelConfig("https://api.fireworks.ai/inference/v1", "vision", "test-key", provider="fireworks"))
+        for status, kind in ((401, "authentication_error"), (429, "rate_limited")):
+            with self.subTest(status=status):
+                response = Mock(status_code=status)
+                response.json.return_value = {"error": {"message": "test-key rejected"}}
+                with patch("llama.requests.post", return_value=response) as post:
+                    with self.assertRaises(ModelUnavailable) as caught:
+                        model.classify(load_stories(self.root, "example")[0], [])
+                post.assert_called_once()
+                self.assertEqual(caught.exception.kind, kind)
+                self.assertNotIn("test-key", str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

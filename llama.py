@@ -5,7 +5,7 @@ Use a vision model such as Qwen3-VL; ordinary text-only Qwen3 cannot read images
 """
 
 # 1. Configuration and the strict response format shared by all classifier calls.
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 import re
@@ -41,30 +41,70 @@ class Decision(BaseModel):
 class ModelConfig:
     base_url: str
     model: str
-    api_key: str = ""
+    api_key: str = field(default="", repr=False)
     timeout: float = 300
     api_style: str = "openai"
     context_length: int = 16384
+    provider: str = "custom"
+    max_output_tokens: int = 1024
 
     @classmethod
-    def from_env(cls):
-        base_url = os.getenv("LLM_BASE_URL", "http://127.0.0.1:11434/v1").rstrip("/")
+    def from_env(cls, model_override=None, provider_override=None):
+        # Preserve legacy LLM_API_STYLE configs when no provider is selected.
+        legacy_style = os.getenv("LLM_API_STYLE", "ollama").strip().lower()
+        provider = provider_override or os.getenv("LLM_PROVIDER", "").strip().lower() or ("ollama" if legacy_style == "ollama" else "custom")
+        if provider not in ("ollama", "fireworks", "openai", "custom"):
+            raise ValueError("LLM_PROVIDER must be ollama, fireworks, openai, or custom. Native Claude is not supported yet.")
+        api_key = os.getenv("LLM_API_KEY", "").strip()
+        if provider == "fireworks":
+            # Do not inherit a stale Ollama URL/model from an existing .env.
+            base_url = os.getenv("FIREWORKS_BASE_URL") or "https://api.fireworks.ai/inference/v1"
+            model = model_override or os.getenv("FIREWORKS_MODEL", "").strip()
+            api_key = os.getenv("FIREWORKS_API_KEY", "").strip() or api_key
+            api_style = "openai"
+            if not api_key:
+                raise ValueError("Set FIREWORKS_API_KEY in .env to use Fireworks.")
+            if not model.startswith("accounts/"):
+                raise ValueError("Set FIREWORKS_MODEL to the full accounts/... vision model or deployment path from your Fireworks account (not an Ollama tag).")
+        elif provider == "openai":
+            base_url = os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+            model = model_override or os.getenv("OPENAI_MODEL", "").strip()
+            api_key = os.getenv("OPENAI_API_KEY", "").strip() or api_key
+            api_style = "openai"
+            if not api_key or not model:
+                raise ValueError("Set OPENAI_API_KEY and OPENAI_MODEL to a vision model supporting Chat Completions and structured outputs.")
+        elif provider == "ollama":
+            base_url = os.getenv("OLLAMA_BASE_URL") or os.getenv("LLM_BASE_URL") or "http://127.0.0.1:11434/v1"
+            model = model_override or os.getenv("OLLAMA_MODEL") or os.getenv("LLM_MODEL") or "qwen3-vl:8b"
+            api_style = "ollama"
+            # A generic/cloud key is never needed by the local Ollama preset.
+            api_key = ""
+        else:
+            base_url = os.getenv("LLM_BASE_URL", "")
+            model = model_override or os.getenv("LLM_MODEL", "")
+            api_style = "openai"
+            if not base_url or not model:
+                raise ValueError("Custom servers need LLM_BASE_URL and LLM_MODEL.")
+        base_url = base_url.rstrip("/")
         parsed = urlsplit(base_url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
-            raise ValueError("LLM_BASE_URL must be an http(s) server URL ending in /v1.")
+            raise ValueError("The model server URL must use http(s).")
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("Use LLM_API_KEY for credentials, not credentials/query parameters in the URL.")
-        model = os.getenv("LLM_MODEL", "qwen3-vl:8b").strip()
+        if provider in ("fireworks", "openai") and parsed.scheme != "https":
+            raise ValueError("Hosted provider URLs must use HTTPS.")
         timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "300"))
-        api_style = os.getenv("LLM_API_STYLE", "ollama").strip().lower()
         context_length = int(os.getenv("LLM_CONTEXT_LENGTH", "16384"))
+        max_output_tokens = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "1024"))
         if not model or not 0 < timeout <= 3600:
             raise ValueError("Set a model name and a timeout between 0 and 3600 seconds.")
-        if api_style not in ("ollama", "openai"):
-            raise ValueError("LLM_API_STYLE must be ollama or openai.")
         if not 1024 <= context_length <= 131072:
             raise ValueError("LLM_CONTEXT_LENGTH must be between 1024 and 131072.")
-        return cls(base_url, model, os.getenv("LLM_API_KEY", ""), timeout, api_style, context_length)
+        if not 128 <= max_output_tokens <= 16384:
+            raise ValueError("LLM_MAX_OUTPUT_TOKENS must be between 128 and 16384.")
+        return cls(base_url=base_url, model=model.strip(), api_key=api_key, timeout=timeout,
+                   api_style=api_style, context_length=context_length, provider=provider,
+                   max_output_tokens=max_output_tokens)
 
 
 class ModelUnavailable(RuntimeError):
@@ -173,12 +213,17 @@ class VisionClassifier:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": content},
             ],
-            "temperature": 0, "max_tokens": 700, "stream": False,
+            "temperature": 0, "max_tokens": self.config.max_output_tokens, "stream": False,
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": "story_decision", "strict": True,
                 "schema": Decision.model_json_schema(),
             }},
         }
+        if self.config.provider == "openai":
+            payload["max_completion_tokens"] = payload.pop("max_tokens")
+            # Some OpenAI models don't accept temperature; use their server default.
+            payload.pop("temperature")
+            payload["store"] = False
         if self.config.api_style == "ollama":
             # The compatibility endpoint cannot set num_ctx. Native Ollama can.
             endpoint = self.config.base_url.removesuffix("/v1").removesuffix("/api") + "/api/chat"
@@ -196,7 +241,7 @@ class VisionClassifier:
                     {"role": "user", "content": "\n".join(text), "images": images},
                 ],
                 "format": Decision.model_json_schema(),
-                "options": {"temperature": 0, "num_predict": 700, "num_ctx": self.config.context_length},
+                "options": {"temperature": 0, "num_predict": self.config.max_output_tokens, "num_ctx": self.config.context_length},
             }
         try:
             response = requests.post(
@@ -219,7 +264,8 @@ class VisionClassifier:
             raise ModelUnavailable("Model request failed before a usable response was received.", "request_error") from exc
         if response.status_code != 200:
             detail = server_error_message(response, self.config.api_key)
-            raise ModelUnavailable(f"Model server returned HTTP {response.status_code}: {detail}")
+            kind = {401: "authentication_error", 403: "access_denied", 404: "model_not_found", 429: "rate_limited"}.get(response.status_code, "server_error")
+            raise ModelUnavailable(f"Model server returned HTTP {response.status_code}: {detail}", kind)
         try:
             body = response.json()
             if self.config.api_style == "ollama":

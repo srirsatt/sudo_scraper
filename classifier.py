@@ -3,7 +3,6 @@
 # 1. Load completed stories from disk. No Instagram login is needed here.
 import argparse
 from collections import Counter
-from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -11,6 +10,7 @@ import logging
 import os
 from pathlib import Path
 import re
+from time import monotonic
 
 from dotenv import load_dotenv
 
@@ -93,7 +93,7 @@ def nearby_images(stories, index):
 # 3. Cache keys cover the model, prompt, images, metadata, links, and context.
 def input_fingerprint(story, context, config):
     digest = hashlib.sha256()
-    digest.update(json.dumps([PROMPT_VERSION, SYSTEM_PROMPT, MEDIA_VERSION, POLICY_VERSION, config.base_url, config.model, config.api_style, config.context_length]).encode())
+    digest.update(json.dumps([PROMPT_VERSION, SYSTEM_PROMPT, MEDIA_VERSION, POLICY_VERSION, config.base_url, config.model, config.api_style, config.context_length, config.provider, config.max_output_tokens]).encode())
     for item in [story, *context]:
         digest.update(json.dumps({k: v for k, v in item.items() if k != "media_path"}, sort_keys=True).encode())
         with item["media_path"].open("rb") as media:
@@ -133,10 +133,12 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
             "taken_at": story["metadata"].get("taken_at"),
             "context_story_ids": [item["story_id"] for item in context],
             "model": model.config.model, "prompt_version": PROMPT_VERSION,
+            "provider": model.config.provider,
             "input_fingerprint": fingerprint,
             "classified_at": datetime.now(timezone.utc).isoformat(),
         }
         LOG.info("Classifying story %s with %s context stories using %s", story["story_id"], len(context), model.config.model)
+        started = monotonic()
         try:
             decision = model.classify(story, context)
         except ModelUnavailable as exc:
@@ -153,6 +155,7 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
             LOG.error("Story %s: %s; result remains retryable", story["story_id"], message)
             continue
         record["model_decision"] = decision.model_dump()
+        record["inference_seconds"] = round(monotonic() - started, 2)
         decision, notes = apply_eligibility_policy(decision)
         record["policy_version"] = POLICY_VERSION
         record["policy_notes"] = notes
@@ -172,7 +175,7 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
             record["review_required"] = True
         write_json(output_path, record)
         counts[decision.classification] += 1
-        LOG.info("Story %s: %s", story["story_id"], decision.classification)
+        LOG.info("Story %s: %s (%.1fs)", story["story_id"], decision.classification, record["inference_seconds"])
     LOG.info("Results: %s", dict(counts))
     return counts
 
@@ -183,6 +186,7 @@ def main():
     parser.add_argument("--limit", type=int, help="Maximum uncached stories to process")
     parser.add_argument("--force", action="store_true", help="Reclassify cached stories")
     parser.add_argument("--model", help="Override LLM_MODEL for this run")
+    parser.add_argument("--provider", choices=("ollama", "fireworks", "openai", "custom"), help="Override LLM_PROVIDER for this run")
     parser.add_argument("--dry-run", action="store_true", help="List pending inputs without calling a model")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
@@ -197,9 +201,7 @@ def main():
         data_dir = Path(os.getenv("COLLECTOR_DATA_DIR", "data")).expanduser()
         if not data_dir.is_absolute():
             data_dir = ROOT / data_dir
-        config = ModelConfig.from_env()
-        if args.model:
-            config = replace(config, model=args.model)
+        config = ModelConfig.from_env(model_override=args.model, provider_override=args.provider)
         model = VisionClassifier(config)
         with collector_lock(data_dir):
             counts = classify_saved(data_dir, target, model, args.limit, args.force, args.dry_run)
