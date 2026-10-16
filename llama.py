@@ -47,9 +47,10 @@ class ModelConfig:
     context_length: int = 16384
     provider: str = "custom"
     max_output_tokens: int = 1024
+    mode: str = "thorough"
 
     @classmethod
-    def from_env(cls, model_override=None, provider_override=None):
+    def from_env(cls, model_override=None, provider_override=None, mode_override=None):
         # Preserve legacy LLM_API_STYLE configs when no provider is selected.
         legacy_style = os.getenv("LLM_API_STYLE", "ollama").strip().lower()
         provider = provider_override or os.getenv("LLM_PROVIDER", "").strip().lower() or ("ollama" if legacy_style == "ollama" else "custom")
@@ -96,6 +97,9 @@ class ModelConfig:
         timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "300"))
         context_length = int(os.getenv("LLM_CONTEXT_LENGTH", "16384"))
         max_output_tokens = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "1024"))
+        mode = mode_override or os.getenv("LLM_MODE", "thorough").strip().lower()
+        if mode not in ("fast", "thorough"):
+            raise ValueError("LLM_MODE must be fast or thorough.")
         if not model or not 0 < timeout <= 3600:
             raise ValueError("Set a model name and a timeout between 0 and 3600 seconds.")
         if not 1024 <= context_length <= 131072:
@@ -104,7 +108,7 @@ class ModelConfig:
             raise ValueError("LLM_MAX_OUTPUT_TOKENS must be between 128 and 16384.")
         return cls(base_url=base_url, model=model.strip(), api_key=api_key, timeout=timeout,
                    api_style=api_style, context_length=context_length, provider=provider,
-                   max_output_tokens=max_output_tokens)
+                   max_output_tokens=max_output_tokens, mode=mode)
 
 
 class ModelUnavailable(RuntimeError):
@@ -194,6 +198,8 @@ class VisionClassifier:
 
     def classify(self, target: dict, context: list[dict]):
         self.last_metrics = {}
+        if self.config.mode == "fast":
+            context = []
         content = []
         for item in [target, *context]:
             label = "TARGET" if item is target else "CONTEXT ONLY"
@@ -202,7 +208,7 @@ class VisionClassifier:
                 "taken_at": item["metadata"].get("taken_at"),
                 "links": item.get("links", []),
             })})
-            for frame in story_images(item, context=item is not target):
+            for frame in story_images(item, context=item is not target, mode=self.config.mode):
                 content.append({"type": "image_url", "image_url": {"url": frame}})
         headers = {}
         if self.config.api_key:

@@ -18,25 +18,26 @@ class MediaError(ValueError):
     pass
 
 
-def jpeg_data_url(source):
+def jpeg_data_url(source, max_side=2048):
     image = ImageOps.exif_transpose(source).convert("RGB")
-    image.thumbnail((2048, 2048))
+    image.thumbnail((max_side, max_side))
     buffer = BytesIO()
     image.save(buffer, format="JPEG", quality=90)
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
-def story_images(story, context=False):
+def story_images(story, context=False, mode="thorough"):
     """Return one image, or sampled JPEG frames (target: 3; context: middle frame)."""
     path = story["media_path"]
+    max_side = 1024 if mode == "fast" else 2048
     if path.suffix.lower() in IMAGE_SUFFIXES:
         with Image.open(path) as source:
-            return [jpeg_data_url(source)]
+            return [jpeg_data_url(source, max_side)]
     if path.suffix.lower() not in VIDEO_SUFFIXES:
         raise MediaError("Unsupported story media format; manual review needed.")
     duration = float(story["metadata"].get("video_duration") or 0)
     # Avoid seeking exactly to the end of a clip. With no duration, use its start.
-    times = [duration * 0.5] if context else [0, duration * 0.5, duration * 0.9]
+    times = [duration * 0.5] if context or mode == "fast" else [0, duration * 0.5, duration * 0.9]
     images = []
     for timestamp in dict.fromkeys(times):
         try:
@@ -46,7 +47,7 @@ def story_images(story, context=False):
                 "-frames:v", "1", "-an", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
             ], capture_output=True, timeout=30, check=True)
             with Image.open(BytesIO(result.stdout)) as frame:
-                images.append(jpeg_data_url(frame))
+                images.append(jpeg_data_url(frame, max_side))
         except (subprocess.SubprocessError, OSError, RuntimeError) as exc:
             raise MediaError("Video frame extraction failed; manual review needed.") from exc
     return images

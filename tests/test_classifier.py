@@ -14,6 +14,9 @@ from llama import Decision, ModelConfig, ModelOutputError, ModelUnavailable, Vis
 from media import story_images
 import imageio_ffmpeg
 import requests
+import base64
+from dataclasses import replace
+from io import BytesIO
 
 
 def internship():
@@ -111,6 +114,36 @@ class ClassifierTests(unittest.TestCase):
         stories = load_stories(self.root, "example")
         self.assertEqual(nearby_images(stories, 0), [])
 
+    def test_fast_mode_omits_neighbors_and_has_separate_cache(self):
+        self.story()
+        self.story("124", minute=1)
+        classify_saved(self.root, "example", self.model, limit=1)
+        self.assertEqual(len(self.model.classify.call_args.args[1]), 1)
+        self.model.config = replace(self.model.config, mode="fast")
+        classify_saved(self.root, "example", self.model, limit=1)
+        self.assertEqual(self.model.classify.call_args.args[1], [])
+        self.assertEqual(self.model.classify.call_count, 2)
+        record = read_json(self.root / "classifications/example/123.json")
+        self.assertEqual(record["mode"], "fast")
+        self.assertEqual(record["context_story_ids"], [])
+
+    def test_fast_images_are_resized_and_context_is_not_sent(self):
+        folder = self.story()
+        self.story("124", minute=1)
+        Image.new("RGB", (720, 1280), "white").save(folder / "media.jpg")
+        model = VisionClassifier(replace(self.model.config, mode="fast"))
+        response = Mock(status_code=200)
+        response.json.return_value = {"choices": [{"finish_reason": "stop", "message": {"content": internship().model_dump_json()}}]}
+        stories = load_stories(self.root, "example")
+        with patch("llama.requests.post", return_value=response) as post:
+            model.classify(stories[0], [stories[1]])
+        content = post.call_args.kwargs["json"]["messages"][1]["content"]
+        images = [p for p in content if p["type"] == "image_url"]
+        self.assertEqual(len(images), 1)
+        data = base64.b64decode(images[0]["image_url"]["url"].split(",", 1)[1])
+        with Image.open(BytesIO(data)) as image:
+            self.assertEqual(max(image.size), 1024)
+
     def test_bad_output_is_retryable_and_never_marked_irrelevant(self):
         self.story()
         self.model.classify.side_effect = ModelOutputError("invalid JSON")
@@ -156,6 +189,7 @@ class ClassifierTests(unittest.TestCase):
         story = {"media_path": video, "metadata": {"video_duration": 2}}
         self.assertEqual(len(story_images(story)), 3)
         self.assertEqual(len(story_images(story, context=True)), 1)
+        self.assertEqual(len(story_images(story, mode="fast")), 1)
 
     def test_dry_run_does_not_call_model_or_write_results(self):
         self.story()

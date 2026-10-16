@@ -93,7 +93,7 @@ def nearby_images(stories, index):
 # 3. Cache keys cover the model, prompt, images, metadata, links, and context.
 def input_fingerprint(story, context, config):
     digest = hashlib.sha256()
-    digest.update(json.dumps([PROMPT_VERSION, SYSTEM_PROMPT, MEDIA_VERSION, POLICY_VERSION, config.base_url, config.model, config.api_style, config.context_length, config.provider, config.max_output_tokens]).encode())
+    digest.update(json.dumps([PROMPT_VERSION, SYSTEM_PROMPT, MEDIA_VERSION, POLICY_VERSION, config.base_url, config.model, config.api_style, config.context_length, config.provider, config.max_output_tokens, config.mode]).encode())
     for item in [story, *context]:
         digest.update(json.dumps({k: v for k, v in item.items() if k != "media_path"}, sort_keys=True).encode())
         with item["media_path"].open("rb") as media:
@@ -115,7 +115,7 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
     for index, story in enumerate(stories):
         if limit is not None and processed >= limit:
             break
-        context = nearby_images(stories, index)
+        context = [] if model.config.mode == "fast" else nearby_images(stories, index)
         fingerprint = input_fingerprint(story, context, model.config)
         output_path = output_dir / (story["story_id"] + ".json")
         previous = read_json(output_path)
@@ -134,6 +134,7 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
             "context_story_ids": [item["story_id"] for item in context],
             "model": model.config.model, "prompt_version": PROMPT_VERSION,
             "provider": model.config.provider,
+            "mode": model.config.mode,
             "input_fingerprint": fingerprint,
             "classified_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -162,7 +163,7 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
         record["policy_version"] = POLICY_VERSION
         record["policy_notes"] = notes
         is_video = story["media_path"].suffix.lower() in VIDEO_SUFFIXES
-        record["media_coverage"] = "sampled_frames_no_audio" if is_video else "image"
+        record["media_coverage"] = ("single_frame_no_audio" if model.config.mode == "fast" else "sampled_frames_no_audio") if is_video else "image"
         # Sampled frames cannot establish that an entire video's content is irrelevant.
         if is_video and decision.classification == "irrelevant":
             decision = decision.model_copy(update={
@@ -189,6 +190,7 @@ def main():
     parser.add_argument("--force", action="store_true", help="Reclassify cached stories")
     parser.add_argument("--model", help="Override LLM_MODEL for this run")
     parser.add_argument("--provider", choices=("ollama", "fireworks", "openai", "custom"), help="Override LLM_PROVIDER for this run")
+    parser.add_argument("--mode", choices=("fast", "thorough"), help="Fast: one smaller image, no neighbors; thorough: sampled frames and neighbors")
     parser.add_argument("--dry-run", action="store_true", help="List pending inputs without calling a model")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
@@ -203,7 +205,7 @@ def main():
         data_dir = Path(os.getenv("COLLECTOR_DATA_DIR", "data")).expanduser()
         if not data_dir.is_absolute():
             data_dir = ROOT / data_dir
-        config = ModelConfig.from_env(model_override=args.model, provider_override=args.provider)
+        config = ModelConfig.from_env(model_override=args.model, provider_override=args.provider, mode_override=args.mode)
         model = VisionClassifier(config)
         with collector_lock(data_dir):
             counts = classify_saved(data_dir, target, model, args.limit, args.force, args.dry_run)
