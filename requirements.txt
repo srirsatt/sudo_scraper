@@ -1,2 +1,5 @@
 instagrapi==3.0.25
 python-dotenv==1.2.4
+requests==2.34.2
+pydantic==2.13.5
+Pillow==12.3.0

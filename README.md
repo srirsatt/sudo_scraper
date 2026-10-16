@@ -2,6 +2,8 @@
 
 Collect zero2sudo's available Instagram stories locally, for a future SWE internship
 classifier and Telegram notifier. This first version only collects stories.
+The classifier stage now reads those saved stories and writes decisions locally;
+Telegram delivery is still pending.
 It uses the unofficial `instagrapi` client; Instagram can restrict access, and neither
 complete coverage nor a ten-minute detection interval is guaranteed.
 
@@ -61,9 +63,8 @@ Subsequent collection passes reuse the session without a password login:
 python collector.py
 ```
 
-No Llama/Qwen API key is needed. Model inference and Telegram are separate stages
-and aren't implemented here. A local model typically needs a server URL and model
-name; whether it requires an API key depends on how that server is configured.
+The collector needs no Llama/Qwen API key. Model inference is a separate stage
+described below. Telegram delivery isn't implemented yet.
 
 The script runs **once**, not every ten minutes. Start with manual passes to verify
 the returned media and links. Scheduling, persisted backoff, and outage alerts are
@@ -134,6 +135,91 @@ python -m unittest discover -s tests -v
 Tests use fake stories and a fake client. They check duplicate suppression, recovery
 after download failure, missing-media recovery, target ID caching, failure timestamps,
 session reuse, and extraction of sticker links. They don't access Instagram.
+
+## Local vision classifier
+
+`classifier.py` reads the saved media. `llama.py` connects to a vision model through
+an OpenAI-compatible `/v1/chat/completions` endpoint; the name doesn't require you
+to use a Llama-family model. Regular Qwen3-8B is text-only; use a vision model.
+
+For a local Ollama setup, install/start Ollama separately and download the model:
+
+```sh
+ollama pull qwen3-vl:8b
+```
+
+The Ollama application must be running (or run `ollama serve` in another terminal
+if it isn't already). This project doesn't install a model or start a model server.
+The download is large; make sure your current laptop has the resources for it, or
+configure another vision model that fits. The planned M4 Pro/24 GB mini is the
+intended host for the 8B quantized model.
+
+Add these lines to your existing `.env`; don't overwrite your Instagram settings:
+
+```dotenv
+LLM_BASE_URL=http://127.0.0.1:11434/v1
+LLM_MODEL=qwen3-vl:8b
+LLM_API_KEY=
+LLM_TIMEOUT_SECONDS=120
+```
+
+Local Ollama requires no API key. Other compatible servers can use their own URL,
+exact vision-model identifier, and optional bearer key. A remote endpoint receives
+the story images and extracted links. The code has been tested against mocked HTTP
+responses; actual model-server compatibility/inference needs a live run.
+
+Preview inputs without calling a model, then classify a small batch:
+
+```sh
+python classifier.py --dry-run --limit 3
+python classifier.py --limit 3
+```
+
+Inspect `data/classifications/<target>/<story-id>.json` alongside each original
+story image, then process the remaining stories:
+
+```sh
+python classifier.py
+```
+
+The decisions are `swe_internship`, `irrelevant`, or `uncertain`, with company/role
+when visible, evidence excerpts, and a reason. There is no uncalibrated confidence
+percentage. The prompt asks the model to distinguish actual software internship
+openings from hiring news, advice, promotions, and full-time roles. Accuracy still
+needs manual evaluation against real stories; valid JSON doesn't prove correctness.
+
+Numbered blocks explain the code:
+
+1. `llama.py` defines environment configuration and a strict output schema. The
+   schema rejects extra fields and requires evidence for positive decisions.
+2. The system prompt defines what qualifies and treats story content as untrusted
+   data. Neither tools nor browsing are enabled for the model.
+3. The image encoder corrects orientation and sends JPEGs with a maximum side of
+   2048 pixels as inline base64. Very small text may still be unreadable.
+4. The parser validates JSON; invalid responses remain errors, never negatives.
+5. The HTTP adapter makes one bounded request without automatic retries. Server
+   failures stop the batch rather than retrying all remaining stories.
+
+`classifier.py` loads complete collector records, adds at most one image neighbor
+on either side within 30 minutes, computes an input fingerprint, and writes each
+result atomically. Original application URLs are copied from the target story;
+the model cannot return invented URL fields. Context links aren't automatically
+assigned to another story, so confirmed openings without their own links are
+flagged for review. Cross-slide job/link association is future work.
+
+Completed image decisions are cached. A changed image, prompt, model, links,
+metadata, or neighboring context invalidates the result. Use `--force` to rerun
+unchanged inputs. Failed responses are retryable on the next invocation. Videos
+are recorded as `needs_review` / `uncertain` without a model call: frame extraction
+and speech transcription aren't implemented, so don't treat this version as full
+coverage of video stories. The classifier makes no Instagram requests and sends
+no Telegram messages.
+
+Classifier tests cover the HTTP request format, output validation, caching, context
+changes, retries, and video handling. These are offline software checks, not a
+measurement of Qwen's accuracy.
+
+API reference: [Ollama vision and OpenAI compatibility](https://docs.ollama.com/api/openai-compatibility).
 
 Library references: [story methods](https://subzeroid.github.io/instagrapi/latest/usage-guide/story/)
 and [session and error handling](https://subzeroid.github.io/instagrapi/latest/usage-guide/best-practices/).
