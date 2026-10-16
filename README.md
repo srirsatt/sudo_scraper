@@ -142,6 +142,26 @@ Classify a small batch:
 python classifier.py --limit 4
 ```
 
+To try faster local classification:
+
+```sh
+python classifier.py --provider ollama --model qwen3-vl:8b --mode fast --limit 1
+```
+
+Fast mode sends one middle video frame (or the still image), resized to a maximum
+side of 1024 pixels, without neighboring stories. Thorough mode uses three target
+video frames and nearby context. Fast mode inspects less content, can miss small
+text or cross-slide details, and still flags video results for review. Choose the
+mode per run with `--mode fast` / `--mode thorough`, or set `LLM_MODE` in `.env`.
+Thorough is the default. Changing modes invalidates cached decisions.
+
+For a timing comparison, copy your current result JSONs elsewhere first, then use
+`--force --limit 1` with each mode to process the same first story. Results overwrite
+the previous JSON for that story. Compare `inference_seconds`, `model_metrics`, and
+`model_decision`, not just the final label. A one-story local comparison took 34.6
+seconds in fast mode versus an earlier 152.6-second thorough run; this is a single
+example, not a speed or accuracy guarantee.
+
 Classify all remaining uncached stories:
 
 ```sh
@@ -193,6 +213,7 @@ The main result fields are:
 | `model_decision` | The model's original label, company, role, evidence, and reason. |
 | `provider` / `model` | Which service and model produced the result. |
 | `inference_seconds` | Time spent preparing media and waiting for the model. |
+| `mode` / `model_metrics` | Input mode, image/token counts, and available server timings. |
 | `decision` | The final decision after eligibility and video-review rules. |
 | `policy_notes` | Why a model decision was adjusted. |
 | `links` | Application links copied from the target story. |
