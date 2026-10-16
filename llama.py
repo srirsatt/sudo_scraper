@@ -1,4 +1,4 @@
-"""Vision-model adapter using a local /v1/chat/completions endpoint.
+"""Vision-model adapter for native Ollama or OpenAI-compatible endpoints.
 
 The filename refers to the local model connection, not a required Llama model.
 Use a vision model such as Qwen3-VL; ordinary text-only Qwen3 cannot read images.
@@ -43,6 +43,8 @@ class ModelConfig:
     model: str
     api_key: str = ""
     timeout: float = 120
+    api_style: str = "openai"
+    context_length: int = 16384
 
     @classmethod
     def from_env(cls):
@@ -54,9 +56,15 @@ class ModelConfig:
             raise ValueError("Use LLM_API_KEY for credentials, not credentials/query parameters in the URL.")
         model = os.getenv("LLM_MODEL", "qwen3-vl:8b").strip()
         timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
+        api_style = os.getenv("LLM_API_STYLE", "ollama").strip().lower()
+        context_length = int(os.getenv("LLM_CONTEXT_LENGTH", "16384"))
         if not model or not 0 < timeout <= 3600:
             raise ValueError("Set a model name and a timeout between 0 and 3600 seconds.")
-        return cls(base_url, model, os.getenv("LLM_API_KEY", ""), timeout)
+        if api_style not in ("ollama", "openai"):
+            raise ValueError("LLM_API_STYLE must be ollama or openai.")
+        if not 1024 <= context_length <= 131072:
+            raise ValueError("LLM_CONTEXT_LENGTH must be between 1024 and 131072.")
+        return cls(base_url, model, os.getenv("LLM_API_KEY", ""), timeout, api_style, context_length)
 
 
 class ModelUnavailable(RuntimeError):
@@ -154,24 +162,43 @@ class VisionClassifier:
         headers = {}
         if self.config.api_key:
             headers["Authorization"] = "Bearer " + self.config.api_key
+        endpoint = self.config.base_url + "/chat/completions"
+        payload = {
+            "model": self.config.model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": content},
+            ],
+            "temperature": 0, "max_tokens": 700, "stream": False,
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "story_decision", "strict": True,
+                "schema": Decision.model_json_schema(),
+            }},
+        }
+        if self.config.api_style == "ollama":
+            # The compatibility endpoint cannot set num_ctx. Native Ollama can.
+            endpoint = self.config.base_url.removesuffix("/v1").removesuffix("/api") + "/api/chat"
+            text, images = [], []
+            for part in content:
+                if part["type"] == "text":
+                    text.append(part["text"])
+                else:
+                    images.append(part["image_url"]["url"].split(",", 1)[1])
+                    text.append(f"Image {len(images)} belongs to the preceding story.")
+            payload = {
+                "model": self.config.model, "stream": False,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": "\n".join(text), "images": images},
+                ],
+                "format": Decision.model_json_schema(),
+                "options": {"temperature": 0, "num_predict": 700, "num_ctx": self.config.context_length},
+            }
         try:
             response = requests.post(
-                self.config.base_url + "/chat/completions",
+                endpoint,
                 headers=headers,
-                json={
-                    "model": self.config.model,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": content},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": 700,
-                    "stream": False,
-                    "response_format": {"type": "json_schema", "json_schema": {
-                        "name": "story_decision", "strict": True,
-                        "schema": Decision.model_json_schema(),
-                    }},
-                },
+                json=payload,
                 timeout=(10, self.config.timeout),
                 allow_redirects=False,
             )
@@ -182,6 +209,10 @@ class VisionClassifier:
             raise ModelUnavailable(f"Model server returned HTTP {response.status_code}: {detail}")
         try:
             body = response.json()
+            if self.config.api_style == "ollama":
+                if body.get("done_reason") == "length":
+                    raise ModelOutputError("The model response was truncated.", content=body.get("message", {}).get("content", "")[:6000])
+                return parse_decision(body["message"]["content"])
             choice = body["choices"][0]
             if choice.get("finish_reason") == "length":
                 raise ModelOutputError("The model response was truncated.", content=choice.get("message", {}).get("content", "")[:6000])

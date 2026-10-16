@@ -198,6 +198,22 @@ class ClassifierTests(unittest.TestCase):
         with self.assertRaises(ModelOutputError):
             parse_decision(json.dumps(data))
 
+    def test_native_ollama_requests_large_context_and_decodes_response(self):
+        self.story()
+        model = VisionClassifier(ModelConfig(
+            "http://localhost:11434/v1", "test-vision", api_style="ollama", context_length=16384,
+        ))
+        response = Mock(status_code=200)
+        response.json.return_value = {"done_reason": "stop", "message": {"content": internship().model_dump_json()}}
+        with patch("llama.requests.post", return_value=response) as post:
+            result = model.classify(load_stories(self.root, "example")[0], [])
+        self.assertEqual(post.call_args.args[0], "http://localhost:11434/api/chat")
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["options"]["num_ctx"], 16384)
+        self.assertEqual(len(payload["messages"][1]["images"]), 1)
+        self.assertNotIn("data:image", payload["messages"][1]["images"][0])
+        self.assertEqual(result.classification, "swe_internship")
+
     def test_server_error_exposes_reason_without_request_secrets(self):
         response = Mock()
         response.json.return_value = {"error": {"message": "Only one image supported. test-key https://example.com/private data:image/jpeg;base64,secret"}}

@@ -93,7 +93,7 @@ def nearby_images(stories, index):
 # 3. Cache keys cover the model, prompt, images, metadata, links, and context.
 def input_fingerprint(story, context, config):
     digest = hashlib.sha256()
-    digest.update(json.dumps([PROMPT_VERSION, SYSTEM_PROMPT, MEDIA_VERSION, POLICY_VERSION, config.base_url, config.model]).encode())
+    digest.update(json.dumps([PROMPT_VERSION, SYSTEM_PROMPT, MEDIA_VERSION, POLICY_VERSION, config.base_url, config.model, config.api_style, config.context_length]).encode())
     for item in [story, *context]:
         digest.update(json.dumps({k: v for k, v in item.items() if k != "media_path"}, sort_keys=True).encode())
         with item["media_path"].open("rb") as media:
