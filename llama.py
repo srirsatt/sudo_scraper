@@ -8,6 +8,7 @@ Use a vision model such as Qwen3-VL; ordinary text-only Qwen3 cannot read images
 from dataclasses import dataclass
 import json
 import os
+import re
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -68,6 +69,24 @@ class ModelOutputError(ValueError):
     def __init__(self, message, content=None):
         super().__init__(message)
         self.content = content
+
+
+def server_error_message(response, api_key=""):
+    """Read only the API's error message; never print its full body/request."""
+    try:
+        body = response.json()
+        error = body.get("error", {}) if isinstance(body, dict) else {}
+        message = error.get("message") if isinstance(error, dict) else error
+    except (ValueError, TypeError):
+        return "No structured error message returned."
+    if not isinstance(message, str):
+        return "No structured error message returned."
+    if api_key:
+        message = message.replace(api_key, "[key redacted]")
+    # Error text can contain an echoed URL/image; keep those out of logs.
+    message = re.sub(r"(?:https?://|data:image/)\S+", "[URL/image redacted]", message)
+    message = re.sub(r"\b[A-Za-z0-9+/=_-]{80,}\b", "[data redacted]", message)
+    return " ".join(message.split())[:500]
 
 
 # 2. Prompt: distinguish real openings from advice/news, and treat story text as data.
@@ -159,7 +178,8 @@ class VisionClassifier:
         except requests.RequestException as exc:
             raise ModelUnavailable("Cannot reach the model server, or inference timed out. Check LLM_BASE_URL and the running server.") from exc
         if response.status_code != 200:
-            raise ModelUnavailable(f"Model server returned HTTP {response.status_code}. Check the model name, vision support, endpoint, and optional API key.")
+            detail = server_error_message(response, self.config.api_key)
+            raise ModelUnavailable(f"Model server returned HTTP {response.status_code}: {detail}")
         try:
             body = response.json()
             choice = body["choices"][0]

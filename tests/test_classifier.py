@@ -10,7 +10,7 @@ from PIL import Image
 
 from classifier import apply_eligibility_policy, classify_saved, load_stories, nearby_images
 from collector import read_json, write_json
-from llama import Decision, ModelConfig, ModelOutputError, ModelUnavailable, VisionClassifier, parse_decision
+from llama import Decision, ModelConfig, ModelOutputError, ModelUnavailable, VisionClassifier, parse_decision, server_error_message
 from media import story_images
 import imageio_ffmpeg
 
@@ -197,6 +197,15 @@ class ClassifierTests(unittest.TestCase):
         data["evidence"] = []
         with self.assertRaises(ModelOutputError):
             parse_decision(json.dumps(data))
+
+    def test_server_error_exposes_reason_without_request_secrets(self):
+        response = Mock()
+        response.json.return_value = {"error": {"message": "Only one image supported. test-key https://example.com/private data:image/jpeg;base64,secret"}}
+        text = server_error_message(response, "test-key")
+        self.assertIn("Only one image supported", text)
+        self.assertNotIn("test-key", text)
+        self.assertNotIn("example.com", text)
+        self.assertNotIn("base64,secret", text)
 
 
 if __name__ == "__main__":
