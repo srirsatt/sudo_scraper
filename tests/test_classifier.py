@@ -13,6 +13,7 @@ from collector import read_json, write_json
 from llama import Decision, ModelConfig, ModelOutputError, ModelUnavailable, VisionClassifier, parse_decision, server_error_message
 from media import story_images
 import imageio_ffmpeg
+import requests
 
 
 def internship():
@@ -222,6 +223,18 @@ class ClassifierTests(unittest.TestCase):
         self.assertNotIn("test-key", text)
         self.assertNotIn("example.com", text)
         self.assertNotIn("base64,secret", text)
+
+    def test_timeout_is_distinguished_from_connection_failure(self):
+        self.story()
+        model = VisionClassifier(ModelConfig("http://localhost:11434/v1", "test-vision", timeout=120))
+        for error, expected in ((requests.ReadTimeout(), "read_timeout"),
+                                (requests.ConnectTimeout(), "connect_timeout"),
+                                (requests.ConnectionError(), "connection_error")):
+            with self.subTest(kind=expected):
+                with patch("llama.requests.post", side_effect=error):
+                    with self.assertRaises(ModelUnavailable) as caught:
+                        model.classify(load_stories(self.root, "example")[0], [])
+                self.assertEqual(caught.exception.kind, expected)
 
 
 if __name__ == "__main__":

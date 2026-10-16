@@ -42,7 +42,7 @@ class ModelConfig:
     base_url: str
     model: str
     api_key: str = ""
-    timeout: float = 120
+    timeout: float = 300
     api_style: str = "openai"
     context_length: int = 16384
 
@@ -55,7 +55,7 @@ class ModelConfig:
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("Use LLM_API_KEY for credentials, not credentials/query parameters in the URL.")
         model = os.getenv("LLM_MODEL", "qwen3-vl:8b").strip()
-        timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
+        timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "300"))
         api_style = os.getenv("LLM_API_STYLE", "ollama").strip().lower()
         context_length = int(os.getenv("LLM_CONTEXT_LENGTH", "16384"))
         if not model or not 0 < timeout <= 3600:
@@ -69,6 +69,10 @@ class ModelConfig:
 
 class ModelUnavailable(RuntimeError):
     """Stop the batch when the server/model is unavailable instead of retrying it."""
+
+    def __init__(self, message, kind="model_unavailable"):
+        super().__init__(message)
+        self.kind = kind
 
 
 class ModelOutputError(ValueError):
@@ -202,8 +206,17 @@ class VisionClassifier:
                 timeout=(10, self.config.timeout),
                 allow_redirects=False,
             )
+        except requests.ConnectTimeout as exc:
+            raise ModelUnavailable("Connection to the model server timed out after 10 seconds. Check the endpoint and server.", "connect_timeout") from exc
+        except requests.ReadTimeout as exc:
+            raise ModelUnavailable(f"Model inference exceeded the {self.config.timeout:g}-second read timeout. Increase LLM_TIMEOUT_SECONDS or use a hosted/smaller vision model.", "read_timeout") from exc
+        except requests.ConnectionError as exc:
+            # Requests can wrap a timeout while reading the response body this way.
+            if "read timed out" in str(exc).lower():
+                raise ModelUnavailable(f"Model inference exceeded the {self.config.timeout:g}-second read timeout. Increase LLM_TIMEOUT_SECONDS or use a hosted/smaller vision model.", "read_timeout") from exc
+            raise ModelUnavailable("Cannot connect to the model server. Check the endpoint and whether the server is running.", "connection_error") from exc
         except requests.RequestException as exc:
-            raise ModelUnavailable("Cannot reach the model server, or inference timed out. Check LLM_BASE_URL and the running server.") from exc
+            raise ModelUnavailable("Model request failed before a usable response was received.", "request_error") from exc
         if response.status_code != 200:
             detail = server_error_message(response, self.config.api_key)
             raise ModelUnavailable(f"Model server returned HTTP {response.status_code}: {detail}")

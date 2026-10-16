@@ -136,10 +136,11 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
             "input_fingerprint": fingerprint,
             "classified_at": datetime.now(timezone.utc).isoformat(),
         }
+        LOG.info("Classifying story %s with %s context stories using %s", story["story_id"], len(context), model.config.model)
         try:
             decision = model.classify(story, context)
-        except ModelUnavailable:
-            record.update(status="error", error="Model server unavailable; retry after checking the server.")
+        except ModelUnavailable as exc:
+            record.update(status="error", error=str(exc), error_type=exc.kind)
             write_json(output_path, record)
             raise
         except (ModelOutputError, MediaError, OSError) as exc:
