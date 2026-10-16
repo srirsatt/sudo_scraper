@@ -1,4 +1,4 @@
-# Sudo scraper
+# zero2sudo story scraper
 
 Collect Instagram stories from zero2sudo, save their application links, and use a
 local vision model to identify software engineering internship postings.
