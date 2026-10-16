@@ -205,7 +205,10 @@ class ClassifierTests(unittest.TestCase):
             "http://localhost:11434/v1", "test-vision", api_style="ollama", context_length=16384,
         ))
         response = Mock(status_code=200)
-        response.json.return_value = {"done_reason": "stop", "message": {"content": internship().model_dump_json()}}
+        response.json.return_value = {
+            "done_reason": "stop", "message": {"content": internship().model_dump_json()},
+            "prompt_eval_count": 2000, "eval_count": 100, "prompt_eval_duration": 2_000_000_000,
+        }
         with patch("llama.requests.post", return_value=response) as post:
             result = model.classify(load_stories(self.root, "example")[0], [])
         self.assertEqual(post.call_args.args[0], "http://localhost:11434/api/chat")
@@ -214,6 +217,9 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(len(payload["messages"][1]["images"]), 1)
         self.assertNotIn("data:image", payload["messages"][1]["images"][0])
         self.assertEqual(result.classification, "swe_internship")
+        self.assertEqual(model.last_metrics["input_tokens"], 2000)
+        self.assertEqual(model.last_metrics["prompt_eval_seconds"], 2)
+        self.assertEqual(model.last_metrics["input_images"], 1)
 
     def test_server_error_exposes_reason_without_request_secrets(self):
         response = Mock()

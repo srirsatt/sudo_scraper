@@ -155,6 +155,8 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
             LOG.error("Story %s: %s; result remains retryable", story["story_id"], message)
             continue
         record["model_decision"] = decision.model_dump()
+        if isinstance(getattr(model, "last_metrics", None), dict):
+            record["model_metrics"] = model.last_metrics
         record["inference_seconds"] = round(monotonic() - started, 2)
         decision, notes = apply_eligibility_policy(decision)
         record["policy_version"] = POLICY_VERSION

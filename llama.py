@@ -193,6 +193,7 @@ class VisionClassifier:
         self.config = config
 
     def classify(self, target: dict, context: list[dict]):
+        self.last_metrics = {}
         content = []
         for item in [target, *context]:
             label = "TARGET" if item is target else "CONTEXT ONLY"
@@ -268,10 +269,21 @@ class VisionClassifier:
             raise ModelUnavailable(f"Model server returned HTTP {response.status_code}: {detail}", kind)
         try:
             body = response.json()
+            self.last_metrics["input_images"] = sum(p["type"] == "image_url" for p in content)
             if self.config.api_style == "ollama":
+                for key, label in (("prompt_eval_count", "input_tokens"), ("eval_count", "output_tokens")):
+                    if isinstance(body.get(key), int):
+                        self.last_metrics[label] = body[key]
+                for key in ("load_duration", "prompt_eval_duration", "eval_duration", "total_duration"):
+                    if isinstance(body.get(key), (int, float)):
+                        self.last_metrics[key.removesuffix("_duration") + "_seconds"] = round(body[key] / 1e9, 3)
                 if body.get("done_reason") == "length":
                     raise ModelOutputError("The model response was truncated.", content=body.get("message", {}).get("content", "")[:6000])
                 return parse_decision(body["message"]["content"])
+            usage = body.get("usage") or {}
+            for key, label in (("prompt_tokens", "input_tokens"), ("completion_tokens", "output_tokens")):
+                if isinstance(usage.get(key), int):
+                    self.last_metrics[label] = usage[key]
             choice = body["choices"][0]
             if choice.get("finish_reason") == "length":
                 raise ModelOutputError("The model response was truncated.", content=choice.get("message", {}).get("content", "")[:6000])
