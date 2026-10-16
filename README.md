@@ -39,18 +39,19 @@ INSTAGRAM_TARGET=zero2sudo
 COLLECTOR_DATA_DIR=data
 
 LLM_BASE_URL=http://127.0.0.1:11434/v1
-LLM_API_STYLE=ollama
+LLM_PROVIDER=ollama
 LLM_MODEL=qwen3-vl:8b
 LLM_CONTEXT_LENGTH=16384
 LLM_API_KEY=
-LLM_TIMEOUT_SECONDS=120
+LLM_TIMEOUT_SECONDS=300
+LLM_MAX_OUTPUT_TOKENS=1024
 ```
 
 Use your own Instagram credentials, not the creator's. Your account must normally
 be able to view the target's stories. Leave the password blank to enter it privately
 when logging in. If you store it in `.env`, quote values containing spaces or `#`.
 
-Install [Ollama](https://ollama.com/download), start the application, and download
+For local classification, install [Ollama](https://ollama.com/download), start the application, and download
 the vision model:
 
 ```sh
@@ -61,8 +62,52 @@ If you use the CLI without the application, run `ollama serve` in another termin
 Local Ollama needs no API key. Use **Qwen3-VL**, since regular Qwen3 is text-only.
 Other compatible vision models can be selected with `LLM_MODEL` or `--model`.
 Native Ollama requests a 16K context window so story frames and nearby context fit.
-For another OpenAI-compatible server, set `LLM_API_STYLE=openai`, use its `/v1` URL,
-and configure the context size on that server instead.
+For another OpenAI-compatible server, set `LLM_PROVIDER=custom`, use its `/v1` URL,
+and configure the context size on that server instead. Existing configurations using
+`LLM_API_STYLE` still work when `LLM_PROVIDER` isn't set.
+
+## Use a hosted vision model
+
+Fireworks runs classification on a hosted model instead of your laptop. Add these
+settings to your existing `.env` (keep your Instagram configuration):
+
+```dotenv
+LLM_PROVIDER=fireworks
+FIREWORKS_API_KEY=your_fireworks_api_key
+FIREWORKS_MODEL=accounts/fireworks/models/YOUR_VISION_MODEL
+```
+
+Replace the model placeholder with a vision model or deployment path available in
+your account. Choose one supporting image inputs and structured outputs; an Ollama
+tag such as `qwen3-vl:8b` is not a Fireworks model ID. Catalog entries marked on-demand
+require an existing deployment; this script does not deploy models. See the
+[Fireworks vision documentation](https://docs.fireworks.ai/guides/querying-vision-language-models)
+and [model library](https://fireworks.ai/models).
+
+The Fireworks preset selects `https://api.fireworks.ai/inference/v1` automatically.
+Your old local `LLM_BASE_URL` and `LLM_MODEL` settings do not override it. Ollama does
+not need to run when using Fireworks.
+
+```sh
+python classifier.py --provider fireworks --limit 1
+```
+
+For OpenAI, set `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL` to a vision
+model supporting Chat Completions and structured outputs. The preset selects the
+OpenAI endpoint. For other compatible endpoints, use `LLM_PROVIDER=custom`,
+`LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY`. Claude's native API isn't implemented.
+
+Hosted requests send saved story images/frames and their extracted links to the
+selected provider and incur its API charges. Instagram passwords and sessions are
+not sent. Keys stay in `.env` or environment variables and are never written to
+classification output. There is no automatic provider fallback or request retry.
+Authentication failures and throttling stop the batch and remain retryable manually.
+
+You can switch back to local inference for a single run:
+
+```sh
+python classifier.py --provider ollama --model qwen3-vl:8b --limit 1
+```
 
 ## Collect stories
 
@@ -146,6 +191,8 @@ The main result fields are:
 | --- | --- |
 | `status` | `complete` for processed results; `error` remains retryable. |
 | `model_decision` | The model's original label, company, role, evidence, and reason. |
+| `provider` / `model` | Which service and model produced the result. |
+| `inference_seconds` | Time spent preparing media and waiting for the model. |
 | `decision` | The final decision after eligibility and video-review rules. |
 | `policy_notes` | Why a model decision was adjusted. |
 | `links` | Application links copied from the target story. |
@@ -170,10 +217,16 @@ rejected. An empty link list does not prove that no application link exists.
   keep `data/session.json` so the existing device identity is preserved.
 - **Model unavailable:** Make sure Ollama is running, the model appears in
   `ollama list`, and `LLM_BASE_URL` includes `/v1`.
-- **Inference times out:** Increase `LLM_TIMEOUT_SECONDS` in `.env` or try a smaller
-  vision model. Failed classifications remain retryable.
-- **Request exceeds context size:** Use `LLM_API_STYLE=ollama` and increase
+- **Inference times out:** Local inference now defaults to 300 seconds. Increase
+  `LLM_TIMEOUT_SECONDS` in `.env` if you previously set 120, use a smaller model, or
+  switch to a hosted provider. Read timeouts and connection failures have separate
+  messages. Finished results remain saved; rerun without `--force` to resume.
+- **Request exceeds context size:** Use `LLM_PROVIDER=ollama` and increase
   `LLM_CONTEXT_LENGTH` if needed. A larger context uses more memory.
+- **Fireworks rejects the request:** Check the full model/deployment path and account
+  access. HTTP 401 indicates authentication failure; HTTP 429 indicates throttling.
+  Use `FIREWORKS_API_KEY`, not an OpenAI key. Hosted context limits are controlled by
+  the provider, not `LLM_CONTEXT_LENGTH`. `--model` overrides need a provider-specific ID.
 - **No stories found:** Check `INSTAGRAM_TARGET`, `COLLECTOR_DATA_DIR`, and whether
   collection completed successfully.
 
