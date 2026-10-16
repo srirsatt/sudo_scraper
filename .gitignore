@@ -1,0 +1,27 @@
+# Local credentials; keep the shareable configuration template.
+.env
+.env.*
+!.env.example
+
+# Downloaded stories, session cookies, and collection state.
+data/
+session.json
+session.json.tmp
+
+# Python environments and generated caches.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Runtime logs and macOS metadata.
+*.log
+logs/
+.DS_Store
+._*
