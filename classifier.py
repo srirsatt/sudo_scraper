@@ -93,7 +93,7 @@ def nearby_images(stories, index):
 # 3. Cache keys cover the model, prompt, images, metadata, links, and context.
 def input_fingerprint(story, context, config):
     digest = hashlib.sha256()
-    digest.update(json.dumps([PROMPT_VERSION, SYSTEM_PROMPT, MEDIA_VERSION, POLICY_VERSION, config.base_url, config.model, config.api_style, config.context_length, config.provider, config.max_output_tokens, config.mode]).encode())
+    digest.update(json.dumps([PROMPT_VERSION, SYSTEM_PROMPT, MEDIA_VERSION, POLICY_VERSION, config.base_url, config.model, config.api_style, config.context_length, config.provider, config.max_output_tokens, config.mode, config.ollama_think if config.api_style == "ollama" else None]).encode())
     for item in [story, *context]:
         digest.update(json.dumps({k: v for k, v in item.items() if k != "media_path"}, sort_keys=True).encode())
         with item["media_path"].open("rb") as media:
@@ -144,11 +144,15 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
             decision = model.classify(story, context)
         except ModelUnavailable as exc:
             record.update(status="error", error=str(exc), error_type=exc.kind)
+            record["inference_seconds"] = round(monotonic() - started, 2)
             write_json(output_path, record)
             raise
         except (ModelOutputError, MediaError, OSError) as exc:
             message = str(exc) if isinstance(exc, (ModelOutputError, MediaError)) else type(exc).__name__
             record.update(status="error", error=message)
+            record["inference_seconds"] = round(monotonic() - started, 2)
+            if isinstance(getattr(model, "last_metrics", None), dict):
+                record["model_metrics"] = model.last_metrics
             if isinstance(exc, ModelOutputError) and exc.content:
                 record["model_output"] = exc.content
             write_json(output_path, record)

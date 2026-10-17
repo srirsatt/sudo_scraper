@@ -48,6 +48,7 @@ class ModelConfig:
     provider: str = "custom"
     max_output_tokens: int = 1024
     mode: str = "thorough"
+    ollama_think: bool = False
 
     @classmethod
     def from_env(cls, model_override=None, provider_override=None, mode_override=None):
@@ -98,6 +99,9 @@ class ModelConfig:
         context_length = int(os.getenv("LLM_CONTEXT_LENGTH", "16384"))
         max_output_tokens = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "1024"))
         mode = mode_override or os.getenv("LLM_MODE", "thorough").strip().lower()
+        think = os.getenv("OLLAMA_THINK", "false").strip().lower()
+        if think not in ("true", "false"):
+            raise ValueError("OLLAMA_THINK must be true or false.")
         if mode not in ("fast", "thorough"):
             raise ValueError("LLM_MODE must be fast or thorough.")
         if not model or not 0 < timeout <= 3600:
@@ -108,7 +112,7 @@ class ModelConfig:
             raise ValueError("LLM_MAX_OUTPUT_TOKENS must be between 128 and 16384.")
         return cls(base_url=base_url, model=model.strip(), api_key=api_key, timeout=timeout,
                    api_style=api_style, context_length=context_length, provider=provider,
-                   max_output_tokens=max_output_tokens, mode=mode)
+                   max_output_tokens=max_output_tokens, mode=mode, ollama_think=think == "true")
 
 
 class ModelUnavailable(RuntimeError):
@@ -243,6 +247,9 @@ class VisionClassifier:
                     text.append(f"Image {len(images)} belongs to the preceding story.")
             payload = {
                 "model": self.config.model, "stream": False,
+                # Qwen3-VL defaults to thinking; it consumes the same output budget
+                # and can exhaust it before producing any classification JSON.
+                "think": self.config.ollama_think,
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": "\n".join(text), "images": images},
@@ -277,6 +284,8 @@ class VisionClassifier:
             body = response.json()
             self.last_metrics["input_images"] = sum(p["type"] == "image_url" for p in content)
             if self.config.api_style == "ollama":
+                thinking = (body.get("message") or {}).get("thinking", "")
+                self.last_metrics["thinking_chars"] = len(thinking) if isinstance(thinking, str) else 0
                 for key, label in (("prompt_eval_count", "input_tokens"), ("eval_count", "output_tokens")):
                     if isinstance(body.get(key), int):
                         self.last_metrics[label] = body[key]

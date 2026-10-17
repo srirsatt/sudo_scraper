@@ -248,6 +248,7 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(post.call_args.args[0], "http://localhost:11434/api/chat")
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["options"]["num_ctx"], 16384)
+        self.assertIs(payload["think"], False)
         self.assertEqual(len(payload["messages"][1]["images"]), 1)
         self.assertNotIn("data:image", payload["messages"][1]["images"][0])
         self.assertEqual(result.classification, "swe_internship")
@@ -321,6 +322,25 @@ class ClassifierTests(unittest.TestCase):
             config = ModelConfig.from_env()
         self.assertEqual(config.api_key, "")
         self.assertEqual(config.timeout, 300)
+        self.assertFalse(config.ollama_think)
+
+    def test_truncated_native_output_retains_metrics_and_is_retryable(self):
+        self.story()
+        config = ModelConfig("http://localhost:11434/v1", "test-vision", api_style="ollama")
+        model = VisionClassifier(config)
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "done_reason": "length", "eval_count": 1024,
+            "message": {"content": "", "thinking": "hidden reasoning, not saved"},
+        }
+        with patch("llama.requests.post", return_value=response):
+            counts = classify_saved(self.root, "example", model)
+        self.assertEqual(counts["errors"], 1)
+        result = read_json(self.root / "classifications/example/123.json")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["model_metrics"]["output_tokens"], 1024)
+        self.assertGreater(result["model_metrics"]["thinking_chars"], 0)
+        self.assertNotIn("hidden reasoning", json.dumps(result))
 
     def test_legacy_configs_remain_compatible(self):
         with patch.dict("os.environ", {"LLM_MODEL": "gemma3:4b"}, clear=True):
