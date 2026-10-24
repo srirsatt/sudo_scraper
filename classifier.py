@@ -103,8 +103,13 @@ def input_fingerprint(story, context, config):
 
 
 # 4. Save decisions separately from collected evidence; errors remain retryable.
-def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=False):
+def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=False, story_ids=None):
     stories = load_stories(data_dir, target)
+    selected = set(story_ids) if story_ids else None
+    if selected:
+        missing = selected - {story["story_id"] for story in stories}
+        if missing:
+            raise ValueError("No completed saved stories for IDs: " + ", ".join(sorted(missing)))
     if not stories:
         LOG.warning("No completed stories found for %s. Check COLLECTOR_DATA_DIR and INSTAGRAM_TARGET.", target)
     output_dir = data_dir / "classifications" / target
@@ -113,6 +118,8 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
     if not dry_run:
         output_dir.mkdir(parents=True, exist_ok=True)
     for index, story in enumerate(stories):
+        if selected and story["story_id"] not in selected:
+            continue
         if limit is not None and processed >= limit:
             break
         context = [] if model.config.mode == "fast" else nearby_images(stories, index)
@@ -195,6 +202,7 @@ def main():
     parser.add_argument("--model", help="Override LLM_MODEL for this run")
     parser.add_argument("--provider", choices=("ollama", "fireworks", "openai", "custom"), help="Override LLM_PROVIDER for this run")
     parser.add_argument("--mode", choices=("fast", "thorough"), help="Fast: one smaller image, no neighbors; thorough: sampled frames and neighbors")
+    parser.add_argument("--story-id", action="append", help="Classify only this saved story ID; repeat to select multiple stories")
     parser.add_argument("--dry-run", action="store_true", help="List pending inputs without calling a model")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
@@ -212,7 +220,7 @@ def main():
         config = ModelConfig.from_env(model_override=args.model, provider_override=args.provider, mode_override=args.mode)
         model = VisionClassifier(config)
         with collector_lock(data_dir):
-            counts = classify_saved(data_dir, target, model, args.limit, args.force, args.dry_run)
+            counts = classify_saved(data_dir, target, model, args.limit, args.force, args.dry_run, args.story_id)
         return 1 if counts["errors"] else 0
     except (OSError, ValueError, RuntimeError) as exc:
         LOG.error("Classification stopped: %s", exc)

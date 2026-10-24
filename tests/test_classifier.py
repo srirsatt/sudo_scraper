@@ -101,6 +101,23 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(classify_saved(self.root, "example", self.model)["cached"], 1)
         self.model.classify.assert_called_once()
 
+    def test_story_selection_keeps_neighbor_context_without_classifying_neighbors(self):
+        self.story()
+        self.story("124", minute=1)
+        counts = classify_saved(self.root, "example", self.model, story_ids=["124"])
+        self.assertEqual(counts["swe_internship"], 1)
+        self.model.classify.assert_called_once()
+        current, context = self.model.classify.call_args.args
+        self.assertEqual(current["story_id"], "124")
+        self.assertEqual([s["story_id"] for s in context], ["123"])
+        self.assertFalse((self.root / "classifications/example/123.json").exists())
+
+    def test_missing_selected_story_fails_before_model_requests(self):
+        self.story()
+        with self.assertRaisesRegex(ValueError, "999"):
+            classify_saved(self.root, "example", self.model, story_ids=["123", "999"])
+        self.model.classify.assert_not_called()
+
     def test_new_neighbor_reclassifies_previous_story(self):
         self.story()
         classify_saved(self.root, "example", self.model)
