@@ -105,6 +105,41 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(record["page_decision"]["classification"], "uncertain")
         self.assertEqual(record["fallback_reason"], "job_text_uncertain")
 
+    def test_auto_reuses_decisions_until_job_content_changes(self):
+        self.story()
+        self.model.config = replace(self.model.config, mode="auto")
+        self.model.classify_text.return_value = internship()
+        pages = Mock()
+        pages.lookup.return_value = self.auto_page()
+        classify_saved(self.root, "example", self.model, page_client=pages)
+        counts = classify_saved(self.root, "example", self.model, page_client=pages)
+        self.assertEqual(counts["cached"], 1)
+        self.model.classify_text.assert_called_once()
+        pages.lookup.return_value = self.auto_page(content_hash="page-v2")
+        classify_saved(self.root, "example", self.model, page_client=pages)
+        self.assertEqual(self.model.classify_text.call_count, 2)
+
+    def test_auto_dry_run_does_not_fetch_or_infer(self):
+        self.story()
+        self.model.config = replace(self.model.config, mode="auto")
+        pages = Mock()
+        pages.lookup.return_value = {"status": "unknown", "reason": "not_fetched"}
+        classify_saved(self.root, "example", self.model, page_client=pages, dry_run=True)
+        pages.lookup.assert_called_once_with("https://example.com/apply", cached_only=True)
+        self.model.classify_text.assert_not_called()
+        self.model.classify.assert_not_called()
+
+    def test_auto_invalid_text_response_can_fall_back_to_vision(self):
+        self.story()
+        self.model.config = replace(self.model.config, mode="auto")
+        self.model.classify_text.side_effect = ModelOutputError("truncated text output")
+        pages = Mock()
+        pages.lookup.return_value = self.auto_page()
+        classify_saved(self.root, "example", self.model, page_client=pages)
+        record = read_json(self.root / "classifications/example/123.json")
+        self.assertEqual(record["classification_source"], "vision")
+        self.assertEqual(record["fallback_reason"], "invalid_job_text_response")
+
     def test_auto_expired_page_is_flagged_for_review(self):
         self.story()
         self.model.config = replace(self.model.config, mode="auto")
