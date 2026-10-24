@@ -40,7 +40,7 @@ COLLECTOR_DATA_DIR=data
 
 LLM_BASE_URL=http://127.0.0.1:11434/v1
 LLM_PROVIDER=ollama
-LLM_MODEL=qwen3-vl:8b
+LLM_MODEL=qwen3-vl:8b-instruct
 LLM_CONTEXT_LENGTH=16384
 LLM_API_KEY=
 LLM_TIMEOUT_SECONDS=300
@@ -55,11 +55,16 @@ For local classification, install [Ollama](https://ollama.com/download), start t
 the vision model:
 
 ```sh
-ollama pull qwen3-vl:8b
+ollama pull qwen3-vl:8b-instruct
 ```
 
 If you use the CLI without the application, run `ollama serve` in another terminal.
 Local Ollama needs no API key. Use **Qwen3-VL**, since regular Qwen3 is text-only.
+Use the explicit `8b-instruct` tag: the plain `8b` tag can emit reasoning even when
+thinking is disabled, exhausting the output budget before JSON is finished. If
+your existing `.env` sets `LLM_MODEL=qwen3-vl:8b`, change it to
+`LLM_MODEL=qwen3-vl:8b-instruct`. The script sends `think=false` by default; set
+`OLLAMA_THINK=true` only if you intentionally want local reasoning enabled.
 Other compatible vision models can be selected with `LLM_MODEL` or `--model`.
 Native Ollama requests a 16K context window so story frames and nearby context fit.
 For another OpenAI-compatible server, set `LLM_PROVIDER=custom`, use its `/v1` URL,
@@ -79,7 +84,7 @@ FIREWORKS_MODEL=accounts/fireworks/models/YOUR_VISION_MODEL
 
 Replace the model placeholder with a vision model or deployment path available in
 your account. Choose one supporting image inputs and structured outputs; an Ollama
-tag such as `qwen3-vl:8b` is not a Fireworks model ID. Catalog entries marked on-demand
+tag such as `qwen3-vl:8b-instruct` is not a Fireworks model ID. Catalog entries marked on-demand
 require an existing deployment; this script does not deploy models. See the
 [Fireworks vision documentation](https://docs.fireworks.ai/guides/querying-vision-language-models)
 and [model library](https://fireworks.ai/models).
@@ -106,7 +111,7 @@ Authentication failures and throttling stop the batch and remain retryable manua
 You can switch back to local inference for a single run:
 
 ```sh
-python classifier.py --provider ollama --model qwen3-vl:8b --limit 1
+python classifier.py --provider ollama --model qwen3-vl:8b-instruct --limit 1
 ```
 
 ## Collect stories
@@ -145,7 +150,7 @@ python classifier.py --limit 4
 To try faster local classification:
 
 ```sh
-python classifier.py --provider ollama --model qwen3-vl:8b --mode fast --limit 1
+python classifier.py --provider ollama --model qwen3-vl:8b-instruct --mode fast --limit 1
 ```
 
 Fast mode sends one middle video frame (or the still image), resized to a maximum
@@ -171,7 +176,7 @@ python classifier.py
 To select a model for one run or reprocess unchanged inputs:
 
 ```sh
-python classifier.py --model qwen3-vl:8b --limit 4
+python classifier.py --model qwen3-vl:8b-instruct --limit 4
 python classifier.py --force --limit 4
 ```
 
@@ -238,6 +243,9 @@ rejected. An empty link list does not prove that no application link exists.
   keep `data/session.json` so the existing device identity is preserved.
 - **Model unavailable:** Make sure Ollama is running, the model appears in
   `ollama list`, and `LLM_BASE_URL` includes `/v1`.
+- **JSON response truncated:** Use `qwen3-vl:8b-instruct` instead of the plain `8b`
+  tag, and leave `OLLAMA_THINK=false`. Error records retain output-token counts,
+  reasoning-character counts, and any partial JSON; reasoning text itself isn't saved.
 - **Inference times out:** Local inference now defaults to 300 seconds. Increase
   `LLM_TIMEOUT_SECONDS` in `.env` if you previously set 120, use a smaller model, or
   switch to a hosted provider. Read timeouts and connection failures have separate
