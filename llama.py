@@ -77,7 +77,7 @@ class ModelConfig:
                 raise ValueError("Set OPENAI_API_KEY and OPENAI_MODEL to a vision model supporting Chat Completions and structured outputs.")
         elif provider == "ollama":
             base_url = os.getenv("OLLAMA_BASE_URL") or os.getenv("LLM_BASE_URL") or "http://127.0.0.1:11434/v1"
-            model = model_override or os.getenv("OLLAMA_MODEL") or os.getenv("LLM_MODEL") or "qwen3-vl:8b"
+            model = model_override or os.getenv("OLLAMA_MODEL") or os.getenv("LLM_MODEL") or "qwen3-vl:8b-instruct"
             api_style = "ollama"
             # A generic/cloud key is never needed by the local Ollama preset.
             api_key = ""
@@ -293,7 +293,10 @@ class VisionClassifier:
                     if isinstance(body.get(key), (int, float)):
                         self.last_metrics[key.removesuffix("_duration") + "_seconds"] = round(body[key] / 1e9, 3)
                 if body.get("done_reason") == "length":
-                    raise ModelOutputError("The model response was truncated.", content=body.get("message", {}).get("content", "")[:6000])
+                    detail = "The model response was truncated."
+                    if self.last_metrics["thinking_chars"] and not self.config.ollama_think:
+                        detail += " Ollama emitted reasoning despite think=false; select an explicit non-thinking/Instruct model (for Qwen3-VL: qwen3-vl:8b-instruct)."
+                    raise ModelOutputError(detail, content=body.get("message", {}).get("content", "")[:6000])
                 return parse_decision(body["message"]["content"])
             usage = body.get("usage") or {}
             for key, label in (("prompt_tokens", "input_tokens"), ("completion_tokens", "output_tokens")):

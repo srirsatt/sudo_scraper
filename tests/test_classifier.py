@@ -323,6 +323,7 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(config.api_key, "")
         self.assertEqual(config.timeout, 300)
         self.assertFalse(config.ollama_think)
+        self.assertEqual(config.model, "qwen3-vl:8b-instruct")
 
     def test_truncated_native_output_retains_metrics_and_is_retryable(self):
         self.story()
@@ -340,6 +341,7 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["model_metrics"]["output_tokens"], 1024)
         self.assertGreater(result["model_metrics"]["thinking_chars"], 0)
+        self.assertIn("reasoning despite think=false", result["error"])
         self.assertNotIn("hidden reasoning", json.dumps(result))
 
     def test_legacy_configs_remain_compatible(self):
