@@ -39,6 +39,16 @@ class JobPageTests(unittest.TestCase):
         result = page_record("https://example.com/jobs/123", "test", "SWE Intern", DESCRIPTION, valid_through="2099-01-01")
         self.assertEqual(result["availability"], "unknown")
 
+    def test_explicit_closed_message_is_retained_despite_old_job_metadata(self):
+        html = '<p>This position is closed.</p>' + self.html(self.job())
+        result = extract_html(html, "https://example.com/jobs/123")
+        self.assertEqual(result["status"], "usable")
+        self.assertEqual(result["availability"], "closed")
+
+    def test_missing_title_is_not_usable(self):
+        result = extract_html(self.html(self.job(title=None)), "https://example.com/jobs/123")
+        self.assertEqual(result["status"], "unknown")
+
     def test_listing_pages_and_other_jobs_are_not_used(self):
         url = "https://example.com/jobs/123"
         self.assertEqual(extract_html(self.html([self.job(), self.job()]), url)["reason"], "multiple_job_postings")

@@ -216,10 +216,10 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
         record["status"] = "complete"
         record["decision"] = decision.model_dump()
         record["review_required"] = decision.classification == "uncertain" or (source == "vision" and is_video)
-        if page and page.get("availability") == "expired":
+        if page and page.get("availability") in ("expired", "closed"):
             record["review_required"] = True
-            record["job_status"] = "expired"
-            record["policy_notes"].append("The linked job page has a past application deadline; don't treat this as a current opening.")
+            record["job_status"] = page["availability"]
+            record["policy_notes"].append("The linked job page is closed or has a past deadline; don't treat this as a current opening.")
         if decision.classification == "swe_internship" and not record["links"]:
             record["review_required"] = True
         write_json(output_path, record)

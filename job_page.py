@@ -12,7 +12,7 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import requests
 
-PAGE_VERSION = "job-page-v1"
+PAGE_VERSION = "job-page-v2"
 MAX_BYTES = 1_500_000
 MAX_TEXT = 8000
 
@@ -104,6 +104,8 @@ def postings(value):
 
 
 def page_record(url, source, title, description, company=None, valid_through=None):
+    if not isinstance(title, str) or not isinstance(description, str):
+        return {"status": "unknown", "reason": "insufficient_job_text"}
     title = plain_text(title).strip()
     description = plain_text(description).strip()
     if not title or len(description) < 120:
@@ -133,6 +135,8 @@ def page_record(url, source, title, description, company=None, valid_through=Non
 def extract_html(html, url):
     parser = PageParser()
     parser.feed(html)
+    text = "\n".join(parser.text)
+    closed = re.search(r"\bthis (?:job|position)(?: posting)? is (?:closed|no longer available|filled)\b|\bno longer accepting applications for this (?:job|position)\b", text[:2500], re.I)
     jobs = []
     for script in parser.scripts:
         try:
@@ -149,9 +153,13 @@ def extract_html(html, url):
             return {"status": "unknown", "reason": "job_url_mismatch"}
         org = job.get("hiringOrganization") or {}
         company = org.get("name") if isinstance(org, dict) else org
-        return page_record(url, "jobposting_jsonld", job.get("title", ""), job.get("description", ""), company, job.get("validThrough"))
+        result = page_record(url, "jobposting_jsonld", job.get("title", ""), job.get("description", ""), company, job.get("validThrough"))
+        if closed:
+            result["availability"] = "closed"
+        return result
     title = " ".join(parser.h1)
-    text = "\n".join(parser.text)
+    if closed:
+        return {"status": "unknown", "reason": "explicitly_closed_job_page", "availability": "closed"}
     detail_path = re.search(r"/jobs?/[^/]+", urlsplit(url).path, re.I) or any(k.lower() in ("gh_jid", "jobid") for k, _ in parse_qsl(urlsplit(url).query))
     generic = re.search(r"^(?:careers?|open (?:roles|positions)|job search|search jobs|jobs|page not found)$", title, re.I)
     challenge = re.search(r"verify (?:you are|you're) human|access denied|captcha|job (?:is no longer available|not found)", text[:2000], re.I)
