@@ -57,7 +57,8 @@ class NotifierTests(unittest.TestCase):
         reopened = DeliveryStore(self.path)
         self.addCleanup(reopened.close)
         self.assertEqual(reopened.get("123", "11", "12345")["message_id"], 42)
-        notify(self.items, ["11"], self.client, reopened, clock=lambda: NOW)
+        counts = notify(self.items, ["11"], self.client, reopened, clock=lambda: NOW)
+        self.assertEqual(counts["already_sent"], 1)
         self.assertEqual(self.session.post.call_count, 1)
         payload = self.session.post.call_args.kwargs["json"]
         self.assertNotIn("parse_mode", payload)
@@ -150,6 +151,24 @@ class NotifierTests(unittest.TestCase):
         self.session.post.return_value.json.side_effect = ValueError()
         self.assertEqual(self.client.send("11", "test")["state"], "unknown")
 
+    def test_null_result_and_bad_rate_limit_parameters_are_safe(self):
+        self.respond(200, {"ok": True, "result": None})
+        self.assertEqual(self.client.send("11", "test")["state"], "unknown")
+        for parameters in (None, [], {"retry_after": "bad"}, {"retry_after": float("inf")}):
+            self.respond(429, {"ok": False, "error_code": 429, "parameters": parameters})
+            self.assertEqual(self.client.send("11", "test")["retry_after"], 60)
+
+    def test_sending_is_committed_before_network_request(self):
+        def inspect_request(*args, **kwargs):
+            reopened = DeliveryStore(self.path)
+            try:
+                self.assertEqual(reopened.get("123", "11", "12345")["state"], "sending")
+            finally:
+                reopened.close()
+            return Mock(status_code=200, json=lambda: {"ok": True, "result": {"message_id": 9}})
+        self.session.post.side_effect = inspect_request
+        self.assertEqual(self.run_sender()["sent"], 1)
+
     def test_auth_failure_stops_batch(self):
         self.respond(401, {"ok": False, "error_code": 401})
         self.assertEqual(self.run_sender(["11", "22"])["rejected"], 1)
@@ -197,6 +216,14 @@ class NotifierTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as error:
             self.client.list_chats()
         self.assertNotIn(TOKEN, str(error.exception))
+
+    def test_malformed_chat_discovery_is_sanitized(self):
+        for body in ([], {"ok": True, "result": None}):
+            self.respond(200, body)
+            with self.assertRaises(RuntimeError):
+                self.client.list_chats()
+        self.respond(200, {"ok": True, "result": [None, {"message": None}]})
+        self.assertEqual(self.client.list_chats(), {})
 
 
 if __name__ == "__main__":
