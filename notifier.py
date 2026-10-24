@@ -1,7 +1,7 @@
 """Send validated SWE internship results to Telegram, tracking each recipient."""
 import argparse
 from collections import Counter
-from contextlib import closing
+from contextlib import closing, nullcontext
 from datetime import datetime, timezone
 import json
 import logging
@@ -140,13 +140,15 @@ class TelegramClient:
         except ValueError:
             return {"state": "unknown", "error": "invalid_response"}
         if response.status_code == 200 and body.get("ok") is True:
-            message_id = body.get("result", {}).get("message_id")
+            result = body.get("result")
+            message_id = result.get("message_id") if isinstance(result, dict) else None
             if isinstance(message_id, int) and not isinstance(message_id, bool):
                 return {"state": "sent", "message_id": message_id}
             return {"state": "unknown", "error": "missing_message_id"}
         code = body.get("error_code", response.status_code)
         if body.get("ok") is False and code == 429:
-            delay = body.get("parameters", {}).get("retry_after", 60)
+            parameters = body.get("parameters")
+            delay = parameters.get("retry_after", 60) if isinstance(parameters, dict) else 60
             delay = delay if isinstance(delay, (int, float)) and math.isfinite(delay) else 60
             return {"state": "retry", "error": "rate_limited", "retry_after": max(1, delay)}
         if body.get("ok") is False and code in (400, 401, 403, 404, 409):
@@ -158,13 +160,17 @@ class TelegramClient:
             response = self.session.post(self._base + "getUpdates", json={"timeout": 0},
                                          timeout=(5, 20), allow_redirects=False)
             body = response.json()
-            if response.status_code != 200 or body.get("ok") is not True:
+            if (response.status_code != 200 or not isinstance(body, dict)
+                    or body.get("ok") is not True or not isinstance(body.get("result"), list)):
                 raise ValueError
             chats = {}
             for update in body["result"]:
+                if not isinstance(update, dict):
+                    continue
                 for key in ("message", "channel_post", "my_chat_member"):
-                    chat = update.get(key, {}).get("chat")
-                    if chat:
+                    event = update.get(key)
+                    chat = event.get("chat") if isinstance(event, dict) else None
+                    if isinstance(chat, dict) and isinstance(chat.get("id"), int):
                         chats[str(chat["id"])] = chat.get("type", "unknown")
             return chats
         except (requests.RequestException, ValueError, KeyError, TypeError):
@@ -182,7 +188,7 @@ def notify(items, chats, client, store, limit=20, dry_run=False, clock=time.time
                 return counts
             row = store.get(client.bot, chat, story)
             if row and (row["state"] != "retry" or row["next_attempt"] > clock()):
-                counts[row["state"]] += 1
+                counts["already_sent" if row["state"] == "sent" else row["state"]] += 1
                 continue
             if store.cooldown(client.bot) > clock():
                 counts["cooldown"] += 1
@@ -244,7 +250,6 @@ def main():
         if args.resolve_story and (not args.chat_id or len(chats) != 1):
             raise ValueError("Resolution requires exactly one --chat-id.")
         # A separate lock serializes sender processes without blocking collection.
-        from contextlib import nullcontext
         with (nullcontext() if readonly else collector_lock(directory)):
             with closing(DeliveryStore(directory / "deliveries.sqlite3", readonly=readonly)) as store:
                 if args.status:
