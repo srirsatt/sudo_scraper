@@ -163,9 +163,18 @@ Thorough is the default. Changing modes invalidates cached decisions.
 For a timing comparison, copy your current result JSONs elsewhere first, then use
 `--force --limit 1` with each mode to process the same first story. Results overwrite
 the previous JSON for that story. Compare `inference_seconds`, `model_metrics`, and
-`model_decision`, not just the final label. A one-story local comparison took 34.6
-seconds in fast mode versus an earlier 152.6-second thorough run; this is a single
-example, not a speed or accuracy guarantee.
+`model_decision`, not just the final label. Timing varies with the model, image,
+generation settings, and whether the model is already loaded.
+
+To inspect a specific saved story, replace `STORY_ID` with its folder name:
+
+```sh
+python classifier.py --provider ollama --model qwen3-vl:8b-instruct --mode fast --force --story-id STORY_ID
+```
+
+Repeat `--story-id` to select multiple stories. Thorough mode still uses neighboring
+stories for context, but only the selected stories are classified. Unknown IDs fail
+before any model requests are sent.
 
 Classify all remaining uncached stories:
 
