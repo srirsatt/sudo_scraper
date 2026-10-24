@@ -15,8 +15,9 @@ from time import monotonic
 from dotenv import load_dotenv
 
 from collector import ROOT, collector_lock, read_json, write_json
-from llama import Decision, ModelConfig, ModelOutputError, ModelUnavailable, PROMPT_VERSION, SYSTEM_PROMPT, VisionClassifier
+from llama import Decision, ModelConfig, ModelOutputError, ModelUnavailable, PROMPT_VERSION, SYSTEM_PROMPT, PAGE_SYSTEM_PROMPT, VisionClassifier
 from media import IMAGE_SUFFIXES, MEDIA_VERSION, VIDEO_SUFFIXES, MediaError
+from job_page import JobPageClient, PAGE_VERSION
 
 LOG = logging.getLogger("classifier")
 POLICY_VERSION = "swe-eligibility-v1"
@@ -91,9 +92,11 @@ def nearby_images(stories, index):
 
 
 # 3. Cache keys cover the model, prompt, images, metadata, links, and context.
-def input_fingerprint(story, context, config):
+def input_fingerprint(story, context, config, page=None):
     digest = hashlib.sha256()
     digest.update(json.dumps([PROMPT_VERSION, SYSTEM_PROMPT, MEDIA_VERSION, POLICY_VERSION, config.base_url, config.model, config.api_style, config.context_length, config.provider, config.max_output_tokens, config.mode, config.ollama_think if config.api_style == "ollama" else None]).encode())
+    if config.mode == "auto":
+        digest.update(json.dumps([PAGE_VERSION, PAGE_SYSTEM_PROMPT, page.get("content_hash") if page else None]).encode())
     for item in [story, *context]:
         digest.update(json.dumps({k: v for k, v in item.items() if k != "media_path"}, sort_keys=True).encode())
         with item["media_path"].open("rb") as media:
@@ -103,7 +106,7 @@ def input_fingerprint(story, context, config):
 
 
 # 4. Save decisions separately from collected evidence; errors remain retryable.
-def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=False, story_ids=None):
+def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=False, story_ids=None, page_client=None):
     stories = load_stories(data_dir, target)
     selected = set(story_ids) if story_ids else None
     if selected:
@@ -115,6 +118,8 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
     output_dir = data_dir / "classifications" / target
     counts = Counter()
     processed = 0
+    if model.config.mode == "auto" and page_client is None:
+        page_client = JobPageClient(data_dir / "job_pages")
     if not dry_run:
         output_dir.mkdir(parents=True, exist_ok=True)
     for index, story in enumerate(stories):
@@ -122,8 +127,12 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
             continue
         if limit is not None and processed >= limit:
             break
-        context = [] if model.config.mode == "fast" else nearby_images(stories, index)
-        fingerprint = input_fingerprint(story, context, model.config)
+        context = [] if model.config.mode in ("auto", "fast") else nearby_images(stories, index)
+        page = None
+        if model.config.mode == "auto":
+            links = story.get("links", [])
+            page = page_client.lookup(links[0], cached_only=dry_run) if len(links) == 1 else {"status": "unknown", "reason": "no_single_job_link"}
+        fingerprint = input_fingerprint(story, context, model.config, page)
         output_path = output_dir / (story["story_id"] + ".json")
         previous = read_json(output_path)
         if not force and previous.get("status") == "complete" and previous.get("input_fingerprint") == fingerprint:
@@ -148,7 +157,28 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
         LOG.info("Classifying story %s with %s context stories using %s", story["story_id"], len(context), model.config.model)
         started = monotonic()
         try:
-            decision = model.classify(story, context)
+            source = "vision"
+            if page is not None:
+                record["job_page"] = {k: v for k, v in page.items() if k != "description"}
+            if page and page.get("status") == "usable":
+                LOG.info("Using job text from %s", page.get("source"))
+                try:
+                    decision = model.classify_text(page)
+                    record["page_decision"] = decision.model_dump()
+                    if isinstance(getattr(model, "last_metrics", None), dict):
+                        record["page_metrics"] = model.last_metrics
+                    if decision.classification != "uncertain":
+                        source = "job_page"
+                    else:
+                        record["fallback_reason"] = "job_text_uncertain"
+                except ModelOutputError:
+                    record["fallback_reason"] = "invalid_job_text_response"
+            elif page is not None:
+                record["fallback_reason"] = page.get("reason", "job_text_unavailable")
+            if source == "vision":
+                if model.config.mode == "auto":
+                    LOG.info("Falling back to one-frame vision: %s", record["fallback_reason"])
+                decision = model.classify(story, context)
         except ModelUnavailable as exc:
             record.update(status="error", error=str(exc), error_type=exc.kind)
             record["inference_seconds"] = round(monotonic() - started, 2)
@@ -167,6 +197,7 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
             LOG.error("Story %s: %s; result remains retryable", story["story_id"], message)
             continue
         record["model_decision"] = decision.model_dump()
+        record["classification_source"] = source
         if isinstance(getattr(model, "last_metrics", None), dict):
             record["model_metrics"] = model.last_metrics
         record["inference_seconds"] = round(monotonic() - started, 2)
@@ -174,9 +205,9 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
         record["policy_version"] = POLICY_VERSION
         record["policy_notes"] = notes
         is_video = story["media_path"].suffix.lower() in VIDEO_SUFFIXES
-        record["media_coverage"] = ("single_frame_no_audio" if model.config.mode == "fast" else "sampled_frames_no_audio") if is_video else "image"
+        record["media_coverage"] = "job_page_text" if source == "job_page" else (("single_frame_no_audio" if model.config.mode in ("auto", "fast") else "sampled_frames_no_audio") if is_video else "image")
         # Sampled frames cannot establish that an entire video's content is irrelevant.
-        if is_video and decision.classification == "irrelevant":
+        if source == "vision" and is_video and decision.classification == "irrelevant":
             decision = decision.model_copy(update={
                 "classification": "uncertain",
                 "reason": "Visible frames were classified as irrelevant. Unsampled frames and audio remain unreviewed.",
@@ -184,7 +215,11 @@ def classify_saved(data_dir, target, model, limit=None, force=False, dry_run=Fal
             record["policy_notes"].append("Video negatives are held for review because coverage is incomplete.")
         record["status"] = "complete"
         record["decision"] = decision.model_dump()
-        record["review_required"] = decision.classification == "uncertain" or is_video
+        record["review_required"] = decision.classification == "uncertain" or (source == "vision" and is_video)
+        if page and page.get("availability") == "expired":
+            record["review_required"] = True
+            record["job_status"] = "expired"
+            record["policy_notes"].append("The linked job page has a past application deadline; don't treat this as a current opening.")
         if decision.classification == "swe_internship" and not record["links"]:
             record["review_required"] = True
         write_json(output_path, record)
@@ -201,7 +236,7 @@ def main():
     parser.add_argument("--force", action="store_true", help="Reclassify cached stories")
     parser.add_argument("--model", help="Override LLM_MODEL for this run")
     parser.add_argument("--provider", choices=("ollama", "fireworks", "openai", "custom"), help="Override LLM_PROVIDER for this run")
-    parser.add_argument("--mode", choices=("fast", "thorough"), help="Fast: one smaller image, no neighbors; thorough: sampled frames and neighbors")
+    parser.add_argument("--mode", choices=("auto", "fast", "thorough"), help="Auto: job-page text first, vision fallback; fast/thorough: vision only")
     parser.add_argument("--story-id", action="append", help="Classify only this saved story ID; repeat to select multiple stories")
     parser.add_argument("--dry-run", action="store_true", help="List pending inputs without calling a model")
     args = parser.parse_args()

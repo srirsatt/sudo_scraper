@@ -60,6 +60,72 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(record["status"], "complete")
         self.assertFalse(record["review_required"])
 
+    def auto_page(self, **overrides):
+        return {"status": "usable", "source": "jobposting_jsonld", "url": "https://example.com/apply",
+                "title": "SWE Intern", "description": "Software engineering internship opening.",
+                "content_hash": "page-v1", "availability": "unknown", **overrides}
+
+    def test_auto_uses_job_text_without_vision_and_preserves_links(self):
+        self.story(video=True)
+        self.model.config = replace(self.model.config, mode="auto")
+        self.model.classify_text.return_value = internship()
+        pages = Mock()
+        pages.lookup.return_value = self.auto_page()
+        classify_saved(self.root, "example", self.model, page_client=pages)
+        self.model.classify.assert_not_called()
+        self.model.classify_text.assert_called_once()
+        record = read_json(self.root / "classifications/example/123.json")
+        self.assertEqual(record["classification_source"], "job_page")
+        self.assertEqual(record["media_coverage"], "job_page_text")
+        self.assertEqual(record["links"], ["https://example.com/apply"])
+        self.assertFalse(record["review_required"])
+
+    def test_auto_failed_fetch_falls_back_without_claiming_closed(self):
+        self.story()
+        self.model.config = replace(self.model.config, mode="auto")
+        pages = Mock()
+        pages.lookup.return_value = {"status": "unknown", "reason": "http_403"}
+        classify_saved(self.root, "example", self.model, page_client=pages)
+        self.model.classify_text.assert_not_called()
+        self.model.classify.assert_called_once()
+        record = read_json(self.root / "classifications/example/123.json")
+        self.assertEqual(record["classification_source"], "vision")
+        self.assertEqual(record["fallback_reason"], "http_403")
+        self.assertNotEqual(record.get("job_status"), "expired")
+
+    def test_auto_ambiguous_text_falls_back_to_vision(self):
+        self.story()
+        self.model.config = replace(self.model.config, mode="auto")
+        self.model.classify_text.return_value = Decision(classification="uncertain", company=None, role=None, evidence=[], reason="Missing role details.")
+        pages = Mock()
+        pages.lookup.return_value = self.auto_page()
+        classify_saved(self.root, "example", self.model, page_client=pages)
+        self.model.classify.assert_called_once()
+        record = read_json(self.root / "classifications/example/123.json")
+        self.assertEqual(record["page_decision"]["classification"], "uncertain")
+        self.assertEqual(record["fallback_reason"], "job_text_uncertain")
+
+    def test_auto_expired_page_is_flagged_for_review(self):
+        self.story()
+        self.model.config = replace(self.model.config, mode="auto")
+        self.model.classify_text.return_value = internship()
+        pages = Mock()
+        pages.lookup.return_value = self.auto_page(availability="expired")
+        classify_saved(self.root, "example", self.model, page_client=pages)
+        record = read_json(self.root / "classifications/example/123.json")
+        self.assertEqual(record["job_status"], "expired")
+        self.assertTrue(record["review_required"])
+
+    def test_job_text_http_request_has_no_images(self):
+        model = VisionClassifier(replace(self.model.config, mode="auto"))
+        response = Mock(status_code=200)
+        response.json.return_value = {"choices": [{"finish_reason": "stop", "message": {"content": internship().model_dump_json()}}]}
+        with patch("llama.requests.post", return_value=response) as post:
+            model.classify_text(self.auto_page())
+        content = post.call_args.kwargs["json"]["messages"][1]["content"]
+        self.assertEqual([p["type"] for p in content], ["text"])
+        self.assertEqual(model.last_metrics["input_images"], 0)
+
     def test_product_manager_intern_is_not_accepted_as_swe(self):
         for company in ("Duolingo", "NVIDIA"):
             with self.subTest(company=company):
