@@ -8,6 +8,7 @@ The program currently:
 - Downloads available story images and videos with metadata and link-sticker URLs.
 - Skips media it has already downloaded.
 - Classifies saved stories as `swe_internship`, `irrelevant`, or `uncertain`.
+- Optionally reads linked job descriptions first, with vision as a fallback.
 - Saves decisions and supporting text for manual review.
 
 Collection and classification run manually, once per command. Automatic scheduling
@@ -135,6 +136,40 @@ on a later pass while the story is still available.
 
 ## Classify saved stories
 
+To try linked job text before images, use **auto mode**:
+
+```sh
+python classifier.py --provider ollama --model qwen3-vl:8b-instruct --mode auto --limit 3
+```
+
+Auto mode tries a public Greenhouse job API, `JobPosting` JSON-LD, or extracted HTML
+text from a specific job-detail page. The model receives the title and description
+as text, without images. Missing/blocked/ambiguous pages and ambiguous or malformed
+model responses fall back to fast vision. JavaScript-only pages aren't rendered
+in a browser in this version. Multiple links or multiple job listings also fall
+back rather than guessing which job the story means.
+
+Set `LLM_MODE=auto` in `.env` to make this your default. Existing fast and thorough
+modes stay available; the default remains thorough until you change it.
+
+Job pages are cached by normalized URL under `data/job_pages/`: usable extracts for
+one hour, failed fetches for one minute. Existing per-story inference caching also
+applies, and changed job text invalidates that decision. `--force` reruns inference
+but still respects the page-fetch cache. `--dry-run` uses cached page data only and
+makes no network/model requests.
+
+Results include `classification_source` (`job_page` or `vision`), `job_page`, and
+`fallback_reason` when applicable. Full extracted text is in the page-cache JSON.
+Text-based decisions aren't downgraded solely because the original story was a
+video. Expired structured deadlines or explicit closed-job messages set
+`job_status` and require review. Missing dates or a successful page fetch do not
+prove applications are still open; fetch failures are not treated as closed jobs.
+
+Job pages are fetched separately from authenticated services: no Instagram cookies
+or model API keys are sent to them. HTML/text is treated as untrusted model input.
+
+For image-only classification, use the commands below.
+
 Check which inputs would be processed without calling the model:
 
 ```sh
@@ -210,6 +245,8 @@ data/
     media.heic                  # Filename/extension varies; videos use .mp4
   classifications/zero2sudo/
     <story-id>.json
+  job_pages/
+    <url-hash>.json              # Auto-mode extracted text and fetch metadata
 ```
 
 Open a classification JSON and compare it with the media in the matching story-ID
@@ -228,6 +265,9 @@ The main result fields are:
 | `provider` / `model` | Which service and model produced the result. |
 | `inference_seconds` | Time spent preparing media and waiting for the model. |
 | `mode` / `model_metrics` | Input mode, image/token counts, and available server timings. |
+| `classification_source` | Job-page text or vision used for the final model decision. |
+| `job_page` / `fallback_reason` | Linked-page extraction metadata and why vision was needed. |
+| `job_status` | `closed` or `expired` when explicit page evidence establishes it. |
 | `decision` | The final decision after eligibility and video-review rules. |
 | `policy_notes` | Why a model decision was adjusted. |
 | `links` | Application links copied from the target story. |
