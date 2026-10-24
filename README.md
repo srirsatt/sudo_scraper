@@ -10,9 +10,10 @@ The program currently:
 - Classifies saved stories as `swe_internship`, `irrelevant`, or `uncertain`.
 - Optionally reads linked job descriptions first, with vision as a fallback.
 - Saves decisions and supporting text for manual review.
+- Sends validated matches to Telegram, with delivery tracking for each recipient.
 
-Collection and classification run manually, once per command. Automatic scheduling
-and Telegram notifications are not implemented yet.
+Collection, classification, and notification run manually, once per command.
+Automatic scheduling is not implemented yet.
 
 ## Setup
 
@@ -279,10 +280,119 @@ status are visible. A tech-company job, product-management internship, or Engine
 title alone is not enough. The classifier can still make mistakes; review both
 positives and negatives before relying on its results.
 
-Videos use sampled frames from the start, middle, and near the end. Audio is not
-transcribed, and content between sampled frames can be missed. Every video result
-requires review; video negatives become `uncertain` rather than being silently
-rejected. An empty link list does not prove that no application link exists.
+Thorough vision uses video frames from the start, middle, and near the end; fast
+vision uses one middle frame. Audio is not transcribed, and content between sampled
+frames can be missed. Vision-based video results require review; video negatives
+become `uncertain` rather than being silently rejected. Job-page-based decisions
+do not require review solely because the original story is a video. An empty link
+list does not prove that no application link exists.
+
+## Send matches to Telegram
+
+1. Open the official [@BotFather](https://t.me/BotFather) in Telegram, use `/newbot`,
+   and put the resulting token in your existing `.env`:
+
+   ```dotenv
+   TELEGRAM_BOT_TOKEN=your_bot_token
+   TELEGRAM_CHAT_IDS=
+   ```
+
+2. Open your new bot and press **Start**. Friends receiving individual messages must
+   also start it. For a group, add the bot; for a channel, add it as an administrator
+   with permission to post. Use a dedicated bot if Hermes already manages another
+   bot: chat discovery can conflict with another gateway or an active webhook.
+
+3. Discover numeric chat IDs from recent updates:
+
+   ```sh
+   python notifier.py --list-chats
+   ```
+
+   This prints IDs and chat types, without sending messages or printing chat text.
+   If the list is empty, send the bot a fresh message and try again. Discovery only
+   sees recent updates, not a permanent list of everyone who started the bot.
+   For a newly added channel/group, try adding the bot or posting a fresh message.
+   The command does not remove webhooks or acknowledge updates with an offset.
+
+4. Add one or more IDs to `.env`:
+
+   ```dotenv
+   TELEGRAM_CHAT_IDS=123456789,-1001234567890
+   ```
+
+Preview pending messages, then send one delivery for an initial check:
+
+```sh
+python notifier.py --dry-run
+python notifier.py --limit 1
+python notifier.py --status
+```
+
+Dry run makes no Telegram requests and writes no delivery state. Without a bot
+token, it uses a preview identity and cannot check an actual bot's previous sends.
+Set the token before relying on the preview for deduplication. You can also preview
+with a recipient override: `python notifier.py --dry-run --chat-id 123456789`.
+
+Send the remaining pending deliveries:
+
+```sh
+python notifier.py
+```
+
+Each message contains company, role, cleaned application links, and the original
+story link when available. The sender reads the final `decision`, not
+`model_decision`. It sends only completed `swe_internship` results with
+`review_required: false`, application links, and a story timestamp within the last
+24 hours. Uncertain, review-required, closed, expired, undated, and future-dated
+results are held. This means a positive identified from sampled video frames is
+held for review. Notification does not prove a job is still accepting applications.
+
+`--limit` defaults to 20 **recipient deliveries**, not 20 stories; each recipient
+counts separately. Repeat `--chat-id` to override the configured recipients for a
+run. `--max-age-hours 48` explicitly includes older stories for testing or catch-up.
+Without an override, old historical classifications are not sent.
+
+Delivery tracking lives in `data/telegram/deliveries.sqlite3` (or under your custom
+`COLLECTOR_DATA_DIR`). Keep it across runs and restarts. Deduplication is per bot,
+recipient, and story, even if classification changes later; it does not deduplicate
+the same job reposted in a different story. Tokens are never stored in the database.
+A separate sender lock prevents simultaneous sender processes; collection can
+continue independently. Do not delete delivery state unless you intend to allow
+resending previously delivered stories.
+
+| State | Behavior on the next run |
+| --- | --- |
+| `sent` | Skip; Telegram confirmed receipt and the message ID was saved. |
+| `retry` | Retry after the saved cooldown, if the story is still eligible. |
+| `rejected` | Hold; fix the token, chat, or permissions and resolve explicitly. |
+| `unknown` | Hold; Telegram may have received the message. Check the chat. |
+| `sending` | Hold; the process stopped before saving an outcome. Check the chat. |
+
+Successful sends are spaced within a run. Telegram 429 responses save a bot-wide
+cooldown using `retry_after` and stop the batch; connection timeouts save a one-minute
+cooldown. Run the command again after the cooldown. There is no retry daemon yet.
+Read timeouts, connection failures with uncertain delivery, server errors, and
+malformed responses are held instead of being blindly retried. Check `--status`;
+unresolved failures and deferred retries return a nonzero exit status when encountered.
+
+After inspecting an ambiguous message in the destination chat, mark it as delivered:
+
+```sh
+python notifier.py --resolve-story STORY_ID --chat-id CHAT_ID --resolution sent
+```
+
+Or explicitly permit a retry if it was not delivered (also usable after fixing a
+rejected delivery):
+
+```sh
+python notifier.py --resolve-story STORY_ID --chat-id CHAT_ID --resolution retry
+python notifier.py
+```
+
+The retry still respects story age, eligibility, and any bot-wide cooldown. Telegram
+`sendMessage` has no idempotency key, so exact-once delivery cannot be guaranteed
+across network failures. Holding ambiguous attempts reduces accidental duplicates.
+No messages are sent by `--status`, `--list-chats`, or the resolution commands.
 
 ## Troubleshooting
 
