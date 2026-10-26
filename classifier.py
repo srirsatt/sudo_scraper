@@ -20,7 +20,7 @@ from media import IMAGE_SUFFIXES, MEDIA_VERSION, VIDEO_SUFFIXES, MediaError
 from job_page import JobPageClient, PAGE_VERSION
 
 LOG = logging.getLogger("classifier")
-POLICY_VERSION = "coding-eligibility-v2"
+POLICY_VERSION = "coding-eligibility-v3"
 INTERNSHIP = re.compile(r"\b(?:intern(?:ship|ing)?s?|co[ -]?op)\b", re.I)
 CODING = re.compile(
     r"\b(?:SWE|SDE|software|coding|code|programming|programmers?|developers?|scripting|automation|"
@@ -35,16 +35,22 @@ NON_SOFTWARE_ROLE = re.compile(
     re.I,
 )
 NEW_GRAD = re.compile(r"\b(?:new[ -]?grad(?:uate)?s?|new college grad(?:uate)?)\b", re.I)
+TECHNICAL_ROLE = re.compile(r"\b(?:AI|ML|machine learning|artificial intelligence|data scien(?:ce|tist)|"
+                            r"computer vision|robotics|autonomy)\b", re.I)
 NOT_OPEN = re.compile(r"\b(?:no formal applications|no applications (?:are )?open|"
                       r"exploring whether to open|gauging interest)\b", re.I)
 
 
 def apply_eligibility_policy(decision):
     """Accept coding work in any internship title/department; retain opening checks."""
+    role = decision.role or ""
     if decision.classification != "swe_internship":
+        if (decision.classification == "irrelevant" and INTERNSHIP.search(role)
+                and TECHNICAL_ROLE.search(role)):
+            note = "Technical internship may involve coding; hold for inclusive review instead of rejecting it."
+            return decision.model_copy(update={"classification": "uncertain", "reason": note}), [note]
         return decision, []
     evidence = " ".join(decision.evidence)
-    role = decision.role or ""
     combined = role + " " + evidence
     coding = bool(CODING.search(combined))
     if NEW_GRAD.search(role) and not INTERNSHIP.search(role):
