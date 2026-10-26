@@ -133,6 +133,23 @@ class CollectorTests(unittest.TestCase):
                     authenticate(client, "example", session, login=True)
         self.assertEqual(read_json(session)["uuids"]["android_device_id"], client.android_device_id)
 
+    def test_saved_thirty_second_delay_is_replaced_with_normal_media_pacing(self):
+        original = Client()
+        original.authorization_data = {"ds_user_id": "42", "sessionid": "offline-test"}
+        original.set_retry_config(request_timeout=30)
+        session = self.root / "session.json"
+        save_session(original, "example", session)
+        restored = Client()
+        authenticate(restored, "example", session, login=False)
+        restored.last_response_ts = 0
+        with patch("instagrapi.mixins.public.time.sleep") as sleep, \
+                patch.object(restored.public, "get") as get:
+            restored._send_public_request("https://example.com/media.jpg", stream=True,
+                                          timeout=restored.read_timeout)
+        sleep.assert_called_once_with(1)
+        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        self.assertEqual(restored.session_retry_total, 0)
+
     def test_links_include_stickers_without_duplicates(self):
         self.assertEqual(extract_links({
             "links": [{"webUri": "https://example.com/apply"}],
