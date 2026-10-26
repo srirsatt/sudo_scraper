@@ -3,6 +3,7 @@ import argparse
 from collections import Counter
 from contextlib import closing, nullcontext
 from datetime import datetime, timezone
+from io import BytesIO
 import json
 import logging
 import math
@@ -14,11 +15,21 @@ import time
 
 from dotenv import load_dotenv
 import requests
+from PIL import Image, ImageOps
+from pillow_heif import register_heif_opener
 
 from collector import ROOT, collector_lock
 from job_page import canonical_url
 
 LOG = logging.getLogger("notifier")
+register_heif_opener()
+
+
+class TelegramControlError(RuntimeError):
+    def __init__(self, code=None, retry_after=10):
+        super().__init__("Telegram control request failed; check connectivity, token, and bot polling conflicts.")
+        self.code = code
+        self.retry_after = retry_after
 
 
 # 1. Read only final, current decisions. Never use the model's raw label.
@@ -124,11 +135,52 @@ class TelegramClient:
         self._base = "https://api.telegram.org/bot" + token + "/"
         self.session = session or requests.Session()
 
-    def send(self, chat, text):
+    def send(self, chat, text, reply_markup=None):
+        payload = {"chat_id": chat, "text": text, "link_preview_options": {"is_disabled": True}}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        return self._send_message("sendMessage", payload)
+
+    def send_review(self, chat, caption, markup, path):
+        """Upload the saved media so reviewing doesn't require opening Instagram."""
+        if path is None or path.stat().st_size > 45 * 1024 * 1024:
+            return self.send(chat, caption + "\nMedia unavailable here; use the story link.", markup)
+        if path.suffix.lower() in (".mp4", ".mov"):
+            with path.open("rb") as handle:
+                return self._send_message("sendVideo", {"chat_id": chat, "caption": caption,
+                    "reply_markup": json.dumps(markup), "supports_streaming": "true"},
+                    files={"video": ("story.mp4", handle, "video/mp4")})
+        with Image.open(path) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            image.thumbnail((1280, 1280))
+            buffer = BytesIO()
+            image.save(buffer, "JPEG", quality=85)
+        buffer.seek(0)
+        return self._send_message("sendPhoto", {"chat_id": chat, "caption": caption,
+            "reply_markup": json.dumps(markup)}, files={"photo": ("story.jpg", buffer, "image/jpeg")})
+
+    def control(self, method, payload):
+        """Poll/acknowledge callbacks without exposing token-bearing request URLs."""
         try:
-            response = self.session.post(self._base + "sendMessage", json={
-                "chat_id": chat, "text": text, "link_preview_options": {"is_disabled": True},
-            }, timeout=(5, 20), allow_redirects=False)
+            response = self.session.post(self._base + method, json=payload,
+                                         timeout=(5, 30), allow_redirects=False)
+            body = response.json()
+        except (requests.RequestException, ValueError):
+            raise TelegramControlError() from None
+        if not isinstance(body, dict):
+            raise TelegramControlError()
+        if response.status_code != 200 or body.get("ok") is not True:
+            params = body.get("parameters")
+            delay = params.get("retry_after", 10) if isinstance(params, dict) else 10
+            delay = delay if isinstance(delay, (int, float)) and math.isfinite(delay) else 10
+            raise TelegramControlError(body.get("error_code", response.status_code), max(1, delay))
+        return body.get("result")
+
+    def _send_message(self, method, payload, files=None):
+        try:
+            kwargs = {"json": payload} if files is None else {"data": payload, "files": files}
+            response = self.session.post(self._base + method, **kwargs,
+                                         timeout=(5, 20), allow_redirects=False)
         except requests.ConnectTimeout:
             return {"state": "retry", "error": "connect_timeout", "retry_after": 60}
         except requests.RequestException:
