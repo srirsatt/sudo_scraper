@@ -1,7 +1,13 @@
 # zero2sudo story scraper
 
 Collect Instagram stories from zero2sudo, save their application links, and use a
-local vision model to identify software engineering internship postings.
+local vision model to identify internships involving coding or development.
+
+The `swe_internship` label is intentionally inclusive: AI/ML, data science,
+robotics/autonomy, tools programming, developer productivity, scripting, automation,
+and any other internship with coding duties qualify. The title does not have to
+say Software Engineer; a hybrid business or engineering internship with Python,
+SQL, or other programming work can qualify too.
 
 The program currently:
 
@@ -276,10 +282,15 @@ The main result fields are:
 | `review_required` | Whether manual review is needed. |
 | `media_coverage` | A still image or sampled video frames without audio. |
 
-Confirm that an actual software engineering/development role and internship/co-op
-status are visible. A tech-company job, product-management internship, or Engineer I
-title alone is not enough. The classifier can still make mistakes; review both
-positives and negatives before relying on its results.
+Confirm that coding/development work and internship/co-op status are established.
+A coding-focused title or quoted programming duties can establish the coding
+component; the validation layer does not require Software Engineer in the title.
+Pure non-coding management, advice, permanent/new-grad jobs, and roles that are
+only gauging interest still do not qualify. A full-time hours label does not exclude
+an internship. The classifier can still make mistakes; review both positives and
+negatives before relying on its results. Prompt/policy changes invalidate old
+classification caches, so the next classification pass can take longer while
+applying the new definition to previously saved stories.
 
 Thorough vision uses video frames from the start, middle, and near the end; fast
 vision uses one middle frame. Audio is not transcribed, and content between sampled
