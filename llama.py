@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 import requests
 from media import story_images
 
-PROMPT_VERSION = "coding-internship-v4"
+PROMPT_VERSION = "coding-internship-v5"
 
 
 class Decision(BaseModel):
@@ -162,6 +162,12 @@ Programmer Intern, Data Scientist Intern, and Autonomy Engineer Intern qualify.
 Python, SQL, C++, or other programming/scripting duties are sufficient even in a
 non-SWE department. Prefer including a coding internship over excluding it for its
 title. Quote both the internship title/status and coding title/duties as evidence.
+Coding does NOT need to be the primary or core responsibility. Any stated coding,
+development, prototyping, dashboard-building, or workflow-automation component is
+enough, even if other duties are management, business, or operations. For example,
+a Technical Program Management Intern who develops dashboards/prototypes/workflow
+automation and uses Python/SQL IS swe_internship. Do not reject such a role because
+its main focus is stakeholder coordination or program management.
 
 Still require an actual internship/co-op opening. Permanent/new-grad jobs, advice,
 news, ads, and pure non-coding roles are irrelevant. A full-time HOURS label does
@@ -171,7 +177,9 @@ software is insufficient. Past internships mentioned as experience do not make a
 permanent job an internship. Engineer I/entry-level alone does not establish an
 internship. If a role is only being considered, says no applications are open, or
 is gauging interest, use uncertain. Use uncertain for unreadable or genuinely
-ambiguous role/employment details. Do not invent missing evidence or URLs.
+ambiguous role/employment details. If an AI/technical internship's description is
+generic and doesn't describe its duties, use uncertain rather than inventing that
+the work is non-coding. Do not invent missing evidence or URLs.
 """
 
 SYSTEM_PROMPT = """You classify Instagram stories for software engineering internship alerts.
