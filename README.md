@@ -12,8 +12,9 @@ The program currently:
 - Saves decisions and supporting text for manual review.
 - Sends validated matches to Telegram, with delivery tracking for each recipient.
 
-Collection, classification, and notification run manually, once per command.
-Automatic scheduling is not implemented yet.
+Run each stage manually, run the full pipeline once, or keep its watcher running
+to check approximately every ten minutes. Automatic startup after reboot is not
+configured yet.
 
 ## Setup
 
@@ -393,6 +394,109 @@ The retry still respects story age, eligibility, and any bot-wide cooldown. Tele
 `sendMessage` has no idempotency key, so exact-once delivery cannot be guaranteed
 across network failures. Holding ambiguous attempts reduces accidental duplicates.
 No messages are sent by `--status`, `--list-chats`, or the resolution commands.
+
+## Run the full pipeline
+
+After verifying Instagram login, local/hosted model access, and one Telegram
+delivery, run all three stages in order:
+
+```sh
+python pipeline.py
+```
+
+The runner uses the current Python environment and the project's `.env`, even when
+started from another directory. It reuses the saved Instagram session, classifier
+cache, and Telegram delivery database. It does not log in again or force cached
+classifications to rerun. Classification defaults to **auto mode**, overriding
+`LLM_MODE` for this command; select `--mode fast` or `--mode thorough` explicitly
+if desired. Provider and model still come from `.env` unless overridden.
+
+Preview the commands without running them, making requests, or writing files:
+
+```sh
+python pipeline.py --dry-run
+```
+
+The preview shows the plan only; it does not validate credentials or preview message
+contents. Use `python notifier.py --dry-run` for individual message previews.
+Before a live run, local preflight checks validate configuration, the saved
+Instagram session's account, and Telegram token/chat formats. They do not prove
+that remote services will accept those credentials.
+
+For continuous checks approximately every ten minutes:
+
+```sh
+python pipeline.py --watch
+```
+
+Keep the machine awake, connected, and the process running. For local inference,
+Ollama must also stay running. On a Mac, you can prevent idle system sleep while
+the watcher runs:
+
+```sh
+caffeinate -i python pipeline.py --watch
+```
+
+Use **Ctrl-C** to stop. This is a foreground watcher: closing its terminal,
+restarting the machine, or system sleep can interrupt it. It does not install a
+macOS LaunchAgent or automatically start after reboot. Ten minutes is the default
+interval between pass starts; a slow pass delays the next one. There is never
+more than one pass running in this watcher. A separate pipeline lock also rejects
+another pipeline using the same data directory. Existing stage locks still apply
+to standalone commands.
+
+Failures stop the current pass before later stages run. In watch mode, ordinary
+failures try again on the next interval using saved progress. An Instagram API
+error (collector exit code 2) stops the watcher entirely; inspect your account
+before manually restarting it. The runner never automatically password-logs in.
+Telegram cooldowns and ambiguous-delivery holds still apply; it cannot bypass them.
+A classification batch with errors holds delivery until a later successful pass.
+There are no Telegram failure alerts yet; failures appear in terminal output and
+the local stage records.
+
+Useful options:
+
+```sh
+# Saved stories only; no Instagram collection request.
+python pipeline.py --skip-collect
+
+# Collect and classify without sending Telegram messages.
+python pipeline.py --skip-notify
+
+# Catch up using older stories, with one recipient delivery at most.
+python pipeline.py --skip-collect --max-age-hours 72 --notify-limit 1
+
+# Limit model work per pass or override the model/provider.
+python pipeline.py --classification-limit 4 --provider ollama --model qwen3-vl:8b-instruct
+
+# Change watch interval (minimum 60 seconds) and per-stage time budget.
+python pipeline.py --watch --interval-seconds 600 --stage-timeout 3600
+```
+
+`--classification-limit` counts uncached stories; `--notify-limit` counts recipient
+delivery attempts (default 20). Telegram delivery defaults to a 24-hour story age;
+the runner does not restrict classification to that age. Each stage has a one-hour
+timeout by default. Timed-out stages stop the pass and preserve whatever had
+already been saved. Use a larger `--stage-timeout` for a large first classification
+batch if needed.
+
+Inspect the most recent executed pass:
+
+```sh
+python pipeline.py --status
+```
+
+Status is saved under `data/pipeline/last_run.json`, with each stage's outcome,
+exit code, timestamps, and elapsed time. `data/pipeline/events.jsonl` appends stage
+transitions across runs. Both use your custom `COLLECTOR_DATA_DIR` if set and are
+ignored by Git with the default data directory. Detailed child-script output stays
+in the terminal; it is not copied into the event log. Preflight failures appear in
+the terminal before a pass starts and do not overwrite the last executed pass.
+
+Pipeline exit codes: `0` successful one-shot pass, `1` failure, `2` Instagram stop,
+and `130` user interruption. A hard crash can leave a `running` snapshot; the next
+start warns and uses the existing caches and delivery tracking to recover. Check
+`python notifier.py --status` separately for any ambiguous Telegram deliveries.
 
 ## Troubleshooting
 
