@@ -81,10 +81,13 @@ def authenticate(client, username, session_path, login):
         # hardware identifiers and cookies. Normal collection keeps the saved profile.
         client.load_settings(session_path, override_app_version=login)
     # Apply after loading settings, so saved retry options cannot override these.
+    # instagrapi's request_timeout is a pacing sleep, NOT an HTTP timeout.
+    # Keep its normal one-second pacing; media requests use read_timeout below.
     client.set_retry_config(
-        request_timeout=30, public_request_retries_count=1, session_retry_total=0,
+        request_timeout=1, public_request_retries_count=1, session_retry_total=0,
         private_transport="curl",
     )
+    client.read_timeout = 30
     if login:
         password = os.getenv("INSTAGRAM_PASSWORD") or getpass("Instagram password: ")
         try:
