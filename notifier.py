@@ -33,15 +33,24 @@ class TelegramControlError(RuntimeError):
 
 
 # 1. Read only final, current decisions. Never use the model's raw label.
-def candidates(data_dir, target, max_age_hours, now):
+def candidates(data_dir, target, max_age_hours, now, bot=None):
     results = []
+    review_decisions = {}
+    if (data_dir / "telegram" / "reviews.sqlite3").exists():
+        # Lazy import avoids a transport/review import cycle and keeps old setups working.
+        from review import decisions, fingerprint
+        bot = bot or os.getenv("TELEGRAM_BOT_TOKEN", "").split(":", 1)[0]
+        review_decisions = decisions(data_dir, bot)
     for path in sorted((data_dir / "classifications" / target).glob("*.json")):
         record = json.loads(path.read_text())
         if record.get("story_id") != path.stem or record.get("target") != target:
             raise ValueError(f"Classification identity mismatch: {path.name}")
-        if (record.get("status") != "complete"
-                or record.get("decision", {}).get("classification") != "swe_internship"
-                or record.get("review_required") is not False
+        resolution = review_decisions.get((target, record.get("story_id"), fingerprint(record))) if review_decisions else None
+        approved = resolution == "approved"
+        label = record.get("decision", {}).get("classification")
+        if (record.get("status") != "complete" or resolution == "skipped"
+                or label not in (("swe_internship", "uncertain") if approved else ("swe_internship",))
+                or (record.get("review_required") is not False and not approved)
                 or record.get("job_status") in ("closed", "expired")):
             continue
         try:
@@ -276,6 +285,7 @@ def main():
     parser.add_argument("--resolution", choices=("sent", "retry"))
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    os.umask(0o077)
     try:
         if args.limit < 1 or not math.isfinite(args.max_age_hours) or args.max_age_hours <= 0:
             raise ValueError("Limit and maximum age must be positive.")
