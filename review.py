@@ -217,8 +217,11 @@ def handle_callback(query, data_dir, target, chat, user, client, store):
     decision = "approved" if match[2] == "a" else "skipped"
     store.decide(row["id"], decision, user, message["message_id"])
     try:
-        client.control("editMessageReplyMarkup", {"chat_id": chat, "message_id": message["message_id"],
-                       "reply_markup": markup(record, row["id"], buttons=False)})
+        media_message = "caption" in message or "photo" in message or "video" in message
+        client.control("editMessageCaption" if media_message else "editMessageText", {
+            "chat_id": chat, "message_id": message["message_id"],
+            "caption" if media_message else "text": clip(decision.title() + "\n\n" + caption(record)),
+            "reply_markup": markup(record, row["id"], buttons=False)})
     except TelegramControlError:
         LOG.warning("Decision saved; couldn't remove the old review buttons.")
     return "Approved. Delivery still checks age, links, and job status." if decision == "approved" else "Skipped."
