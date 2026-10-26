@@ -207,6 +207,7 @@ class ClassifierTests(unittest.TestCase):
             ("Robotics Engineering Intern", ["Robotics Engineering Intern"]),
             ("Computer Vision / Applied AI Intern", ["Write maintainable code", "Summer internship"]),
             ("Product Manager Intern", ["Product Manager Intern", "Build automation with Python"]),
+            ("Technical Program Management Intern", ["Summer internship", "Develop dashboards, prototypes, or workflow automation"]),
             ("Quantitative Research Intern", ["Quantitative Research Intern", "Strong programming skills"]),
             ("Reliability Engineering Co-op", ["Reliability Engineering Co-op", "Use Python for analysis"]),
             ("Business Analyst Intern", ["Business Analyst Intern", "Write SQL queries"]),
