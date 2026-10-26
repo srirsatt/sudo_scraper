@@ -242,6 +242,15 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(final.classification, "uncertain")
         self.assertTrue(any("opening" in note for note in notes))
 
+    def test_technical_internship_negative_is_held_for_inclusive_review(self):
+        for role in ("Undergraduate Intern - Neurology AI", "Data Scientist Intern", "Robotics Intern"):
+            with self.subTest(role=role):
+                raw = Decision(classification="irrelevant", company="Example", role=role,
+                               evidence=["Undergraduate internship"], reason="Generic duties do not establish coding.")
+                final, notes = apply_eligibility_policy(raw)
+                self.assertEqual(final.classification, "uncertain")
+                self.assertTrue(any("inclusive review" in note for note in notes))
+
     def test_policy_change_invalidates_saved_classification(self):
         self.story()
         classify_saved(self.root, "example", self.model)
