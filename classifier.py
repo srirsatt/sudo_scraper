@@ -20,10 +20,13 @@ from media import IMAGE_SUFFIXES, MEDIA_VERSION, VIDEO_SUFFIXES, MediaError
 from job_page import JobPageClient, PAGE_VERSION
 
 LOG = logging.getLogger("classifier")
-POLICY_VERSION = "swe-eligibility-v1"
-INTERNSHIP = re.compile(r"\b(?:intern(?:ship)?s?|co[ -]?op)\b", re.I)
-SOFTWARE_ROLE = re.compile(
-    r"\b(?:SWE|SDE)\b|\bsoftware\s+(?:engineer(?:ing)?|develop(?:er|ment)|intern)\b|"
+POLICY_VERSION = "coding-eligibility-v2"
+INTERNSHIP = re.compile(r"\b(?:intern(?:ship|ing)?s?|co[ -]?op)\b", re.I)
+CODING = re.compile(
+    r"\b(?:SWE|SDE|software|coding|code|programming|programmers?|developers?|scripting|automation|"
+    r"Python|JavaScript|TypeScript|Java|SQL|Rust|Golang|PyTorch|TensorFlow|JAX)\b|C\+\+|C#|"
+    r"\b(?:AI|ML|AI/ML|machine learning|artificial intelligence|computer vision|"
+    r"data scien(?:ce|tist)|data engineer(?:ing)?|robotics|autonomy)\b|"
     r"\b(?:front[ -]?end|back[ -]?end|full[ -]?stack|mobile|iOS|Android|web)\s+(?:engineer(?:ing)?|develop(?:er|ment))\b",
     re.I,
 )
@@ -31,22 +34,32 @@ NON_SOFTWARE_ROLE = re.compile(
     r"^(?:technical\s+)?(?:product|program|project)\s+(?:manager|management)\b|\bPM\s+MBA\b",
     re.I,
 )
+NEW_GRAD = re.compile(r"\b(?:new[ -]?grad(?:uate)?s?|new college grad(?:uate)?)\b", re.I)
+NOT_OPEN = re.compile(r"\b(?:no formal applications|no applications (?:are )?open|"
+                      r"exploring whether to open|gauging interest)\b", re.I)
 
 
 def apply_eligibility_policy(decision):
-    """Require explicit supporting text before accepting a model's positive label."""
+    """Accept coding work in any internship title/department; retain opening checks."""
     if decision.classification != "swe_internship":
         return decision, []
     evidence = " ".join(decision.evidence)
     role = decision.role or ""
-    if NON_SOFTWARE_ROLE.search(role):
-        note = "The advertised role is product/program/project management, outside the SWE filter."
+    combined = role + " " + evidence
+    coding = bool(CODING.search(combined))
+    if NEW_GRAD.search(role) and not INTERNSHIP.search(role):
+        note = "The advertised role is a new-grad job, not an internship/co-op."
+        return decision.model_copy(update={"classification": "irrelevant", "reason": note}), [note]
+    if NON_SOFTWARE_ROLE.search(role) and not coding:
+        note = "The management role does not establish coding/development work."
         return decision.model_copy(update={"classification": "irrelevant", "reason": note}), [note]
     notes = []
-    if not INTERNSHIP.search(evidence):
-        notes.append("Quoted evidence does not explicitly establish an internship or co-op.")
-    if not SOFTWARE_ROLE.search(role) or not SOFTWARE_ROLE.search(evidence):
-        notes.append("Role and quoted evidence do not explicitly establish software engineering/development.")
+    if not INTERNSHIP.search(combined):
+        notes.append("Role and evidence do not establish an internship or co-op.")
+    if not coding:
+        notes.append("Role and evidence do not establish coding/development work.")
+    if NOT_OPEN.search(evidence):
+        notes.append("The role is only being considered; an actual opening is not established.")
     if notes:
         return decision.model_copy(update={"classification": "uncertain", "reason": " ".join(notes)}), notes
     return decision, []
