@@ -196,6 +196,58 @@ class ClassifierTests(unittest.TestCase):
         )
         self.assertEqual(apply_eligibility_policy(raw)[0].classification, "uncertain")
 
+    def test_coding_internships_pass_without_a_software_engineer_title(self):
+        examples = [
+            ("Tools Programmer Intern (Graphics)", ["Tools Programmer Intern (Graphics)"]),
+            ("AI Platform Engineer Intern", ["AI Platform Engineer Intern"]),
+            ("Agentic AI Engineer Intern", ["Agentic AI Engineer Intern"]),
+            ("Developer Productivity Intern", ["Developer Productivity Intern"]),
+            ("Autonomy Engineer Intern", ["Autonomy Engineer Intern", "Implement algorithms in C++"]),
+            ("Data Scientist Intern", ["Data Scientist Intern"]),
+            ("Robotics Engineering Intern", ["Robotics Engineering Intern"]),
+            ("Computer Vision / Applied AI Intern", ["Write maintainable code", "Summer internship"]),
+            ("Product Manager Intern", ["Product Manager Intern", "Build automation with Python"]),
+            ("Quantitative Research Intern", ["Quantitative Research Intern", "Strong programming skills"]),
+            ("Reliability Engineering Co-op", ["Reliability Engineering Co-op", "Use Python for analysis"]),
+            ("Business Analyst Intern", ["Business Analyst Intern", "Write SQL queries"]),
+            ("Systems Intern", ["Systems Intern", "Build tooling in C#"]),
+        ]
+        for role, evidence in examples:
+            with self.subTest(role=role):
+                raw = Decision(classification="swe_internship", company="Example", role=role,
+                               evidence=evidence, reason="A coding-related internship opening.")
+                final, notes = apply_eligibility_policy(raw)
+                self.assertEqual(final.classification, "swe_internship")
+                self.assertEqual(notes, [])
+
+    def test_interning_wording_and_coding_duties_qualify(self):
+        raw = Decision(classification="swe_internship", company="Example", role="Quantitative Research",
+                       evidence=["For candidates interested in interning", "Requires Python programming"],
+                       reason="A programming internship.")
+        self.assertEqual(apply_eligibility_policy(raw)[0].classification, "swe_internship")
+
+    def test_past_internships_do_not_turn_new_grad_job_into_internship(self):
+        raw = Decision(classification="swe_internship", company="Example",
+                       role="Software Engineer I, QA (New Grad)",
+                       evidence=["0-2 years software experience, internships included"],
+                       reason="Incorrect model positive.")
+        self.assertEqual(apply_eligibility_policy(raw)[0].classification, "irrelevant")
+
+    def test_coding_role_only_gauging_interest_stays_uncertain(self):
+        raw = Decision(classification="swe_internship", company="Example", role="GTM Intern",
+                       evidence=["Software engineering for marketing", "Gauging interest; no formal applications yet"],
+                       reason="A potential coding internship.")
+        final, notes = apply_eligibility_policy(raw)
+        self.assertEqual(final.classification, "uncertain")
+        self.assertTrue(any("opening" in note for note in notes))
+
+    def test_policy_change_invalidates_saved_classification(self):
+        self.story()
+        classify_saved(self.root, "example", self.model)
+        with patch("classifier.POLICY_VERSION", "future-policy"):
+            classify_saved(self.root, "example", self.model)
+        self.assertEqual(self.model.classify.call_count, 2)
+
     def test_cache_skips_unchanged_inputs(self):
         self.story()
         classify_saved(self.root, "example", self.model)
