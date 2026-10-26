@@ -224,6 +224,27 @@ class ReviewTests(unittest.TestCase):
         self.assertIn("photo", kwargs["files"])
         self.assertEqual(json.loads(kwargs["data"]["reply_markup"])["inline_keyboard"][0][0]["text"], "Approve")
 
+    def test_saved_video_uses_video_upload_with_the_same_review_buttons(self):
+        session = Mock()
+        session.post.return_value.status_code = 200
+        session.post.return_value.json.return_value = {"ok": True, "result": {"message_id": 9}}
+        client = TelegramClient("123:test_token", session)
+        path = self.root / "story.mp4"
+        path.write_bytes(b"saved video bytes; transport does not decode them")
+        self.assertEqual(client.send_review("11", "Review", markup(self.record, self.row["id"]), path)["state"], "sent")
+        self.assertTrue(session.post.call_args.args[0].endswith("/sendVideo"))
+        self.assertIn("video", session.post.call_args.kwargs["files"])
+        self.assertTrue(session.post.call_args.kwargs["files"]["video"][1].closed)
+
+    def test_media_card_shows_approved_status_and_removes_decision_buttons(self):
+        query = self.query()
+        query["message"]["caption"] = "Review internship"
+        self.handle(query)
+        method, payload = self.client.control.call_args.args
+        self.assertEqual(method, "editMessageCaption")
+        self.assertTrue(payload["caption"].startswith("Approved"))
+        self.assertTrue(all("callback_data" not in button for row in payload["reply_markup"]["inline_keyboard"] for button in row))
+
 
 if __name__ == "__main__":
     unittest.main()
