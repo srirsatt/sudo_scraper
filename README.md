@@ -1,551 +1,439 @@
-# zero2sudo story scraper
+# sudo_scraper
 
-Collect Instagram stories from zero2sudo, save their application links, and use a
-local vision model to identify internships involving coding or development.
+Internship links from Instagram stories, delivered to Telegram.
 
-The `swe_internship` label is intentionally inclusive: AI/ML, data science,
-robotics/autonomy, tools programming, developer productivity, scripting, automation,
-and any other internship with coding duties qualify. The title does not have to
-say Software Engineer; a hybrid business or engineering internship with Python,
-SQL, or other programming work can qualify too. Coding does not have to be the
-main responsibility: even a smaller development, prototyping, dashboard-building,
-or workflow-automation component qualifies. Generic technical/AI descriptions
-without clear duties are held as uncertain rather than assumed to be non-coding.
+I built this because I wanted to stay off Instagram without missing the internship
+postings zero2sudo shares. Opening the app for one application link was still
+opening the app. This collects the stories, finds coding-related internships, and
+puts the useful links somewhere I already check.
 
-The program currently:
+My setup is a **base M4 Pro Mac mini with 24 GB unified memory and a 512 GB SSD**,
+using Qwen3-VL locally through Ollama. The Mac handles collection and inference;
+Telegram is the interface on my phone. No separate iOS app is needed.
 
-- Downloads available story images and videos with metadata and link-sticker URLs.
-- Skips media it has already downloaded.
-- Classifies saved stories as `swe_internship`, `irrelevant`, or `uncertain`.
-- Optionally reads linked job descriptions first, with vision as a fallback.
-- Saves decisions and supporting text for manual review.
-- Sends validated matches to Telegram, with delivery tracking for each recipient.
+This is a personal, unofficial project, unaffiliated with Instagram or zero2sudo.
+It uses an unofficial Instagram client and cannot guarantee complete coverage,
+unrestricted access, or a fixed notification time.
 
-Run each stage manually, run the full pipeline once, or keep its watcher running
-to check approximately every ten minutes. Automatic startup after reboot is not
-configured yet.
+## How it works
+
+```mermaid
+flowchart LR
+    Stories[Instagram stories] --> Collect[Collect media and original links]
+    Collect --> Classify[Read linked job text first]
+    Classify -->|missing or ambiguous page| Vision[Inspect an image or video frames]
+    Classify --> Rules[Validate internship and coding evidence]
+    Vision --> Rules
+    Rules -->|match| Send[Telegram delivery tracker]
+    Rules -->|held for review| Review[Private review chat]
+    Review -->|Approve| Send
+    Review -->|Skip| Saved[Save skip decision]
+    Send --> Inbox[Your chats or channel]
+```
+
+- **Collect:** save available images/videos, metadata, and original application links.
+  Previously completed downloads are reused.
+- **Classify:** try public job-page text before vision. Output is `swe_internship`,
+  `uncertain`, or `irrelevant`, with evidence and a reason.
+- **Validate:** require an internship/co-op and coding-related work. Unclear cases
+  are held, including vision decisions based on sampled video frames.
+- **Deliver:** send matches to configured Telegram recipients and track each delivery.
+- **Review:** send held stories to one private chat with their saved media and
+  Approve / Skip buttons. Decisions survive restarts and repeated pipeline runs.
+
+The `swe_internship` label is intentionally broad: **any coding or development
+component counts**, even if it is a small part of the role. AI/ML, data science,
+robotics, autonomy, graphics/tools programming, security, scripting, automation,
+and hybrid business roles can qualify. The title does not need to say Software
+Engineer. Pure non-coding roles, permanent/new-grad jobs, news, advice, and ads do
+not qualify. Generic technical internships with unclear duties stay reviewable.
+
+## Requirements
+
+- Python 3.10+ on macOS or Linux. File locks use `fcntl`; Windows is not supported.
+- An Instagram account that can normally view the target's stories.
+- [Ollama](https://ollama.com/download) for local inference, or a compatible hosted model.
+- A Telegram bot and at least one recipient chat.
+- An awake, connected machine while the watchers run.
 
 ## Setup
 
-Use Python 3.10+ on macOS or Linux. Run these commands from the project directory:
-
 ```sh
+git clone https://github.com/srirsatt/sudo_scraper.git
+cd sudo_scraper
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-```
-
-For a fresh setup, create your local configuration:
-
-```sh
 cp .env.example .env
 ```
 
-If you already have a `.env`, keep it and add any missing settings from
-[.env.example](.env.example). Edit the settings for your account:
+For an existing installation, keep `.env` and add missing settings from
+[.env.example](.env.example). Never replace a working configuration just to update it.
+
+### 1. Instagram
+
+Set these in `.env` using **your own account**, not the creator's credentials:
 
 ```dotenv
 INSTAGRAM_USERNAME=your_instagram_username
 INSTAGRAM_PASSWORD=
 INSTAGRAM_TARGET=zero2sudo
 COLLECTOR_DATA_DIR=data
-
-LLM_BASE_URL=http://127.0.0.1:11434/v1
-LLM_PROVIDER=ollama
-LLM_MODEL=qwen3-vl:8b-instruct
-LLM_CONTEXT_LENGTH=16384
-LLM_API_KEY=
-LLM_TIMEOUT_SECONDS=300
-LLM_MAX_OUTPUT_TOKENS=1024
 ```
 
-Use your own Instagram credentials, not the creator's. Your account must normally
-be able to view the target's stories. Leave the password blank to enter it privately
-when logging in. If you store it in `.env`, quote values containing spaces or `#`.
-
-For local classification, install [Ollama](https://ollama.com/download), start the application, and download
-the vision model:
-
-```sh
-ollama pull qwen3-vl:8b-instruct
-```
-
-If you use the CLI without the application, run `ollama serve` in another terminal.
-Local Ollama needs no API key. Use **Qwen3-VL**, since regular Qwen3 is text-only.
-Use the explicit `8b-instruct` tag: the plain `8b` tag can emit reasoning even when
-thinking is disabled, exhausting the output budget before JSON is finished. If
-your existing `.env` sets `LLM_MODEL=qwen3-vl:8b`, change it to
-`LLM_MODEL=qwen3-vl:8b-instruct`. The script sends `think=false` by default; set
-`OLLAMA_THINK=true` only if you intentionally want local reasoning enabled.
-Other compatible vision models can be selected with `LLM_MODEL` or `--model`.
-Native Ollama requests a 16K context window so story frames and nearby context fit.
-For another OpenAI-compatible server, set `LLM_PROVIDER=custom`, use its `/v1` URL,
-and configure the context size on that server instead. Existing configurations using
-`LLM_API_STYLE` still work when `LLM_PROVIDER` isn't set.
-
-## Use a hosted vision model
-
-Fireworks runs classification on a hosted model instead of your laptop. Add these
-settings to your existing `.env` (keep your Instagram configuration):
-
-```dotenv
-LLM_PROVIDER=fireworks
-FIREWORKS_API_KEY=your_fireworks_api_key
-FIREWORKS_MODEL=accounts/fireworks/models/YOUR_VISION_MODEL
-```
-
-Replace the model placeholder with a vision model or deployment path available in
-your account. Choose one supporting image inputs and structured outputs; an Ollama
-tag such as `qwen3-vl:8b-instruct` is not a Fireworks model ID. Catalog entries marked on-demand
-require an existing deployment; this script does not deploy models. See the
-[Fireworks vision documentation](https://docs.fireworks.ai/guides/querying-vision-language-models)
-and [model library](https://fireworks.ai/models).
-
-The Fireworks preset selects `https://api.fireworks.ai/inference/v1` automatically.
-Your old local `LLM_BASE_URL` and `LLM_MODEL` settings do not override it. Ollama does
-not need to run when using Fireworks.
-
-```sh
-python classifier.py --provider fireworks --limit 1
-```
-
-For OpenAI, set `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL` to a vision
-model supporting Chat Completions and structured outputs. The preset selects the
-OpenAI endpoint. For other compatible endpoints, use `LLM_PROVIDER=custom`,
-`LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY`. Claude's native API isn't implemented.
-
-Hosted requests send saved story images/frames and their extracted links to the
-selected provider and incur its API charges. Instagram passwords and sessions are
-not sent. Keys stay in `.env` or environment variables and are never written to
-classification output. There is no automatic provider fallback or request retry.
-Authentication failures and throttling stop the batch and remain retryable manually.
-
-You can switch back to local inference for a single run:
-
-```sh
-python classifier.py --provider ollama --model qwen3-vl:8b-instruct --limit 1
-```
-
-## Collect stories
-
-Log in and collect the currently available stories:
+Leave the password blank to enter it privately. Authenticate once:
 
 ```sh
 python collector.py --login
 ```
 
-Enter your password and two-factor code if prompted. The collector saves the
-session locally. For subsequent collection passes, reuse it:
+Enter any requested verification code. The session and device identity are saved
+locally. Later collection reuses them; it does not automatically password-log in.
 
 ```sh
 python collector.py
 ```
 
-The summary reports how many stories were available, newly saved, or incomplete.
-If nothing new has appeared, `newly saved: 0` is expected. Failed downloads can retry
-on a later pass while the story is still available.
+`Available: 6; newly saved: 1; incomplete: 0` means six stories were available,
+one needed downloading, and all downloads are complete.
 
-## Classify saved stories
+### 2. Local model
 
-To try linked job text before images, use **auto mode**:
-
-```sh
-python classifier.py --provider ollama --model qwen3-vl:8b-instruct --mode auto --limit 3
-```
-
-Auto mode tries a public Greenhouse job API, `JobPosting` JSON-LD, or extracted HTML
-text from a specific job-detail page. The model receives the title and description
-as text, without images. Missing/blocked/ambiguous pages and ambiguous or malformed
-model responses fall back to fast vision. JavaScript-only pages aren't rendered
-in a browser in this version. Multiple links or multiple job listings also fall
-back rather than guessing which job the story means.
-
-Set `LLM_MODE=auto` in `.env` to make this your default. Existing fast and thorough
-modes stay available; the default remains thorough until you change it.
-
-Job pages are cached by normalized URL under `data/job_pages/`: usable extracts for
-one hour, failed fetches for one minute. Existing per-story inference caching also
-applies, and changed job text invalidates that decision. `--force` reruns inference
-but still respects the page-fetch cache. `--dry-run` uses cached page data only and
-makes no network/model requests.
-
-Results include `classification_source` (`job_page` or `vision`), `job_page`, and
-`fallback_reason` when applicable. Full extracted text is in the page-cache JSON.
-Text-based decisions aren't downgraded solely because the original story was a
-video. Expired structured deadlines or explicit closed-job messages set
-`job_status` and require review. Missing dates or a successful page fetch do not
-prove applications are still open; fetch failures are not treated as closed jobs.
-
-Job pages are fetched separately from authenticated services: no Instagram cookies
-or model API keys are sent to them. HTML/text is treated as untrusted model input.
-
-For image-only classification, use the commands below.
-
-Check which inputs would be processed without calling the model:
+Start Ollama and download the explicit **Instruct** model:
 
 ```sh
-python classifier.py --dry-run --limit 4
+ollama pull qwen3-vl:8b-instruct
 ```
 
-Classify a small batch:
+```dotenv
+LLM_PROVIDER=ollama
+LLM_BASE_URL=http://127.0.0.1:11434/v1
+LLM_MODEL=qwen3-vl:8b-instruct
+LLM_MODE=auto
+OLLAMA_THINK=false
+LLM_CONTEXT_LENGTH=16384
+LLM_TIMEOUT_SECONDS=300
+LLM_MAX_OUTPUT_TOKENS=1024
+```
+
+Local Ollama needs no API key. Use Qwen3-**VL** for image support. The plain
+`qwen3-vl:8b` tag previously emitted reasoning and truncated its JSON output;
+use `qwen3-vl:8b-instruct`. If running without the Ollama app, start `ollama serve`.
+
+Try a small batch:
 
 ```sh
-python classifier.py --limit 4
+python classifier.py --mode auto --limit 3
 ```
 
-To try faster local classification:
+The classifier reads saved stories; it does not contact Instagram. Job-page text
+may still require public HTTP requests. A large first batch can take minutes;
+cached passes generally have less work. Prompt, model, input, or policy changes
+invalidate classification caches and can cause a one-time reprocessing backlog.
+
+### 3. Telegram delivery
+
+Create a bot with the official [@BotFather](https://t.me/BotFather), using `/newbot`.
+Put the token in `.env`, open your new bot, and press **Start**.
+
+```dotenv
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_IDS=
+```
+
+Discover your private chat ID:
 
 ```sh
-python classifier.py --provider ollama --model qwen3-vl:8b-instruct --mode fast --limit 1
+python notifier.py --list-chats
 ```
 
-Fast mode sends one middle video frame (or the still image), resized to a maximum
-side of 1024 pixels, without neighboring stories. Thorough mode uses three target
-video frames and nearby context. Fast mode inspects less content, can miss small
-text or cross-slide details, and still flags video results for review. Choose the
-mode per run with `--mode fast` / `--mode thorough`, or set `LLM_MODE` in `.env`.
-Thorough is the default. Changing modes invalidates cached decisions.
+If this prints `{}`, send the bot a fresh message and try again. It does not need
+to reply. Use the returned numeric ID:
 
-For a timing comparison, copy your current result JSONs elsewhere first, then use
-`--force --limit 1` with each mode to process the same first story. Results overwrite
-the previous JSON for that story. Compare `inference_seconds`, `model_metrics`, and
-`model_decision`, not just the final label. Timing varies with the model, image,
-generation settings, and whether the model is already loaded.
-
-To inspect a specific saved story, replace `STORY_ID` with its folder name:
-
-```sh
-python classifier.py --provider ollama --model qwen3-vl:8b-instruct --mode fast --force --story-id STORY_ID
+```dotenv
+TELEGRAM_CHAT_IDS=123456789
 ```
 
-Repeat `--story-id` to select multiple stories. Thorough mode still uses neighboring
-stories for context, but only the selected stories are classified. Unknown IDs fail
-before any model requests are sent.
+For friends, add comma-separated IDs; each person must first start the bot. You can
+also add the bot to a group or make it a channel administrator with posting rights.
+Use a dedicated bot for this project: the review worker owns Telegram update polling
+and must not share it with Hermes or another bot gateway/webhook.
 
-Classify all remaining uncached stories:
-
-```sh
-python classifier.py
-```
-
-To select a model for one run or reprocess unchanged inputs:
-
-```sh
-python classifier.py --model qwen3-vl:8b-instruct --limit 4
-python classifier.py --force --limit 4
-```
-
-`--limit` counts uncached stories, so repeating a limited run processes the next
-pending batch. Changing the model, prompt, processing rules, or story inputs also
-invalidates the cache. Results for a story are overwritten when it is reprocessed;
-copy them elsewhere first if you want to retain a model comparison.
-
-Classification reads saved media without contacting Instagram. Original application
-URLs come from the collector; the model does not supply them.
-
-## Inspect results
-
-With the default configuration, files are stored here:
-
-```text
-data/
-  session.json
-  state.json
-  stories/zero2sudo/<story-id>/
-    story.json
-    media.heic                  # Filename/extension varies; videos use .mp4
-  classifications/zero2sudo/
-    <story-id>.json
-  job_pages/
-    <url-hash>.json              # Auto-mode extracted text and fetch metadata
-```
-
-Open a classification JSON and compare it with the media in the matching story-ID
-folder. To open the result folder in VS Code, if its `code` command is installed:
-
-```sh
-code data/classifications/zero2sudo
-```
-
-The main result fields are:
-
-| Field | Meaning |
-| --- | --- |
-| `status` | `complete` for processed results; `error` remains retryable. |
-| `model_decision` | The model's original label, company, role, evidence, and reason. |
-| `provider` / `model` | Which service and model produced the result. |
-| `inference_seconds` | Time spent preparing media and waiting for the model. |
-| `mode` / `model_metrics` | Input mode, image/token counts, and available server timings. |
-| `classification_source` | Job-page text or vision used for the final model decision. |
-| `job_page` / `fallback_reason` | Linked-page extraction metadata and why vision was needed. |
-| `job_status` | `closed` or `expired` when explicit page evidence establishes it. |
-| `decision` | The final decision after eligibility and video-review rules. |
-| `policy_notes` | Why a model decision was adjusted. |
-| `links` | Application links copied from the target story. |
-| `review_required` | Whether manual review is needed. |
-| `media_coverage` | A still image or sampled video frames without audio. |
-
-Confirm that coding/development work and internship/co-op status are established.
-A coding-focused title or quoted programming duties can establish the coding
-component; the validation layer does not require Software Engineer in the title.
-Pure non-coding management, advice, permanent/new-grad jobs, and roles that are
-only gauging interest still do not qualify. A full-time hours label does not exclude
-an internship. The classifier can still make mistakes; review both positives and
-negatives before relying on its results. Prompt/policy changes invalidate old
-classification caches, so the next classification pass can take longer while
-applying the new definition to previously saved stories.
-
-Thorough vision uses video frames from the start, middle, and near the end; fast
-vision uses one middle frame. Audio is not transcribed, and content between sampled
-frames can be missed. Vision-based video results require review; video negatives
-become `uncertain` rather than being silently rejected. Job-page-based decisions
-do not require review solely because the original story is a video. An empty link
-list does not prove that no application link exists.
-
-## Send matches to Telegram
-
-1. Open the official [@BotFather](https://t.me/BotFather) in Telegram, use `/newbot`,
-   and put the resulting token in your existing `.env`:
-
-   ```dotenv
-   TELEGRAM_BOT_TOKEN=your_bot_token
-   TELEGRAM_CHAT_IDS=
-   ```
-
-2. Open your new bot and press **Start**. Friends receiving individual messages must
-   also start it. For a group, add the bot; for a channel, add it as an administrator
-   with permission to post. Use a dedicated bot if Hermes already manages another
-   bot: chat discovery can conflict with another gateway or an active webhook.
-
-3. Discover numeric chat IDs from recent updates:
-
-   ```sh
-   python notifier.py --list-chats
-   ```
-
-   This prints IDs and chat types, without sending messages or printing chat text.
-   If the list is empty, send the bot a fresh message and try again. Discovery only
-   sees recent updates, not a permanent list of everyone who started the bot.
-   For a newly added channel/group, try adding the bot or posting a fresh message.
-   The command does not remove webhooks or acknowledge updates with an offset.
-
-4. Add one or more IDs to `.env`:
-
-   ```dotenv
-   TELEGRAM_CHAT_IDS=123456789,-1001234567890
-   ```
-
-Preview pending messages, then send one delivery for an initial check:
+Preview and verify one delivery:
 
 ```sh
 python notifier.py --dry-run
 python notifier.py --limit 1
-python notifier.py --status
 ```
 
-Dry run makes no Telegram requests and writes no delivery state. Without a bot
-token, it uses a preview identity and cannot check an actual bot's previous sends.
-Set the token before relying on the preview for deduplication. You can also preview
-with a recipient override: `python notifier.py --dry-run --chat-id 123456789`.
-
-Send the remaining pending deliveries:
+Normal delivery includes only eligible stories from the **last 24 hours**. Zero
+eligible stories can be correct: matches may be old, held, missing links, or closed.
+For deliberate catch-up/testing, pass the same age override to preview and sending:
 
 ```sh
-python notifier.py
+python notifier.py --dry-run --max-age-hours 72
+python notifier.py --max-age-hours 72 --limit 1
 ```
 
-Each message contains company, role, cleaned application links, and the original
-story link when available. The sender reads the final `decision`, not
-`model_decision`. It sends only completed `swe_internship` results with
-`review_required: false`, application links, and a story timestamp within the last
-24 hours. Uncertain, review-required, closed, expired, undated, and future-dated
-results are held. This means a positive identified from sampled video frames is
-held for review. Notification does not prove a job is still accepting applications.
+### 4. Telegram review
 
-`--limit` defaults to 20 **recipient deliveries**, not 20 stories; each recipient
-counts separately. Repeat `--chat-id` to override the configured recipients for a
-run. `--max-age-hours 48` explicitly includes older stories for testing or catch-up.
-Without an override, old historical classifications are not sent.
+Add your **positive private chat ID** to `.env`:
 
-Delivery tracking lives in `data/telegram/deliveries.sqlite3` (or under your custom
-`COLLECTOR_DATA_DIR`). Keep it across runs and restarts. Deduplication is per bot,
-recipient, and story, even if classification changes later; it does not deduplicate
-the same job reposted in a different story. Tokens are never stored in the database.
-A separate sender lock prevents simultaneous sender processes; collection can
-continue independently. Do not delete delivery state unless you intend to allow
-resending previously delivered stories.
+```dotenv
+TELEGRAM_REVIEW_CHAT_ID=123456789
+# Optional: defaults to that private chat ID.
+TELEGRAM_REVIEW_USER_ID=
+```
 
-| State | Behavior on the next run |
+Only this user in this private chat can approve or skip. Friends and channel members
+cannot authorize deliveries by tapping a copied or forwarded button.
+
+Preview held stories, then start the worker:
+
+```sh
+python review.py --dry-run --limit 1
+python review.py --watch
+```
+
+Cards contain the saved image or video, the role, evidence, hold reason, application
+buttons when links exist, and **Approve / Skip**. HEIC images are converted for
+Telegram. Media over the upload budget or missing from disk falls back to a text
+card with a story link. You can review most stories without opening Instagram.
+
+```mermaid
+sequenceDiagram
+    participant You
+    participant Telegram
+    participant Worker as review.py
+    participant State as Local SQLite
+    participant Sender as Delivery tracker
+    Worker->>Telegram: Held story + media + buttons
+    You->>Telegram: Approve or Skip
+    Worker->>Telegram: Poll button update
+    Worker->>State: Check reviewer, message, and current story version
+    Worker->>State: Persist decision
+    Worker->>Telegram: Show Approved or Skipped
+    alt Approved
+        Worker->>Sender: Deliver if age, link, and job checks pass
+        Sender->>Telegram: Application alert to recipients
+    else Skipped
+        State-->>Worker: Keep this version skipped
+    end
+```
+
+Approval can release an uncertain result or a positive held for video review.
+It **does not** override explicit closed/expired status, missing application links,
+or the delivery age window. The worker tries approved deliveries itself, so you
+do not have to wait for the next pipeline pass. Existing successful deliveries
+are skipped per recipient.
+
+A review is bound to the story's classifier inputs, decision, links, and job status.
+Unchanged reruns keep it; changed inputs/decisions require a fresh review. The
+classifier's JSON remains untouched. Repeated taps do not reverse a saved decision.
+A card whose send outcome is ambiguous is not automatically resent; if it actually
+arrived, its authenticated button can still resolve it.
+
+The worker handles up to five new review-card attempts per pass. `--limit` changes
+that per-pass cap; it is not a lifetime cap in watch mode. Buttons are handled by
+outbound long polling, usually within about a polling cycle when the worker is
+available. Card uploads, failures, or another busy sender can delay handling.
+
+## Daily use
+
+Run the complete pipeline once:
+
+```sh
+python pipeline.py
+```
+
+Keep these running in **two terminals** on the Mac mini:
+
+```sh
+# Terminal 1: collect, classify, and deliver approximately every ten minutes.
+source .venv/bin/activate
+caffeinate -i python pipeline.py --watch
+```
+
+```sh
+# Terminal 2: review new held stories and handle button taps.
+source .venv/bin/activate
+caffeinate -i python review.py --watch
+```
+
+`caffeinate` is macOS-specific. On Linux, run the same Python commands without it.
+Keep Ollama running for local inference. Ctrl-C stops either watcher. These are
+foreground processes: terminal closure, sleep, or reboot can interrupt them.
+Automatic startup after reboot and a native iOS app are not included.
+
+Pipeline stages run sequentially, with independent stage locks and a pipeline lock.
+A slow pass delays the next check; passes never overlap within the watcher.
+An ordinary failure stops that pass and retries at the next interval. An Instagram
+API/account error stops the watcher entirely so you can inspect the account.
+There are no automatic password logins or Telegram failure-alert broadcasts.
+
+## Commands
+
+| Task | Command |
 | --- | --- |
-| `sent` | Skip; Telegram confirmed receipt and the message ID was saved. |
-| `retry` | Retry after the saved cooldown, if the story is still eligible. |
-| `rejected` | Hold; fix the token, chat, or permissions and resolve explicitly. |
-| `unknown` | Hold; Telegram may have received the message. Check the chat. |
-| `sending` | Hold; the process stopped before saving an outcome. Check the chat. |
+| Preview the pipeline plan; no requests or writes | `python pipeline.py --dry-run` |
+| Inspect the latest executed pass | `python pipeline.py --status` |
+| Use saved stories without collecting | `python pipeline.py --skip-collect` |
+| Collect/classify without the pipeline's sender | `python pipeline.py --skip-notify` |
+| Limit model work and delivery attempts | `python pipeline.py --classification-limit 4 --notify-limit 1` |
+| Change watch interval / stage timeout | `python pipeline.py --watch --interval-seconds 600 --stage-timeout 3600` |
+| Inspect delivery state | `python notifier.py --status` |
+| Inspect review state | `python review.py --status` |
+| Poll buttons and queue cards once | `python review.py` |
+| Review older held stories deliberately | `python review.py --watch --max-age-hours 72` |
+| Classify one saved story again | `python classifier.py --mode auto --force --story-id STORY_ID` |
+| Inspect pending classifier inputs without requests | `python classifier.py --mode auto --dry-run` |
 
-Successful sends are spaced within a run. Telegram 429 responses save a bot-wide
-cooldown using `retry_after` and stop the batch; connection timeouts save a one-minute
-cooldown. Run the command again after the cooldown. There is no retry daemon yet.
-Read timeouts, connection failures with uncertain delivery, server errors, and
-malformed responses are held instead of being blindly retried. Check `--status`;
-unresolved failures and deferred retries return a nonzero exit status when encountered.
+Stop the review worker too when testing without live Telegram activity: it runs
+independently of the pipeline, so `--skip-notify` does not stop that separate worker.
+Both dry-run commands are safe to use without sending messages.
 
-After inspecting an ambiguous message in the destination chat, mark it as delivered:
+`--notify-limit` counts recipient delivery attempts, not stories. The pipeline's
+watch interval has a 60-second minimum; ten minutes is the default, not a coverage
+guarantee. Each stage defaults to a one-hour time budget. First batches or small
+local machines may need a larger budget.
+
+## Classification and providers
+
+| Mode | Inputs |
+| --- | --- |
+| `auto` | One linked job description when usable; otherwise fast vision. |
+| `fast` | One middle video frame or one image, maximum side 1024 px, no neighbors. |
+| `thorough` | Start/middle/near-end video frames and nearby story context. |
+
+Auto extraction supports Greenhouse's public job API, `JobPosting` JSON-LD, and
+conservative HTML text. Blocked pages, JS-only shells, mismatched listings, and
+ambiguous links fall back to vision. The program does not render job sites in a
+browser. Usable job text is cached for one hour; failed fetches for one minute.
+`--force` reruns inference but respects page-fetch caching.
+
+The pipeline defaults to auto mode even if an older `.env` says thorough. Standalone
+classification uses `LLM_MODE`. Sampled video frames do not cover all frames or
+audio; audio is not transcribed. Vision-based video positives require review,
+and negatives are held as uncertain. Job-page-based decisions do not require review
+solely because the source story is a video. A fetched page is not proof a job is open.
+
+For Fireworks, set:
+
+```dotenv
+LLM_PROVIDER=fireworks
+FIREWORKS_API_KEY=your_key
+FIREWORKS_MODEL=accounts/fireworks/models/YOUR_VISION_MODEL
+```
+
+Choose an available model/deployment supporting vision and structured output; an
+Ollama tag is not a Fireworks model ID. See the [Fireworks vision guide](https://docs.fireworks.ai/guides/querying-vision-language-models).
+The preset uses `https://api.fireworks.ai/inference/v1` and ignores stale local
+model/URL settings. An on-demand entry may need an existing deployment; this project
+does not provision one.
+
+An OpenAI-compatible preset is available through `LLM_PROVIDER=openai`,
+`OPENAI_API_KEY`, and `OPENAI_MODEL`. Custom compatible servers use
+`LLM_PROVIDER=custom`, `LLM_BASE_URL`, `LLM_MODEL`, and optional `LLM_API_KEY`.
+Claude's native API is not implemented. There is no automatic paid-provider fallback.
+Hosted inference sends the job text or selected story images and metadata to that
+provider and can incur charges. Instagram credentials are not sent to it.
+
+## Persistence and recovery
+
+```text
+data/
+  session.json                           Instagram session; keep private
+  state.json                             Collection state
+  stories/<target>/<story-id>/            Original story.json and media
+  classifications/<target>/<id>.json      Model output, final label, and evidence
+  job_pages/                             Cached public job text
+  telegram/
+    deliveries.sqlite3                   Per-recipient delivery attempts
+    reviews.sqlite3                      Review cards, decisions, and polling offset
+  pipeline/
+    last_run.json                        Last pass and stage timings
+    events.jsonl                         Stage history
+```
+
+Back up this directory privately when moving to the Mac mini. Keep the delivery
+and review databases across restarts. Deleting them can allow repeats. A custom
+data directory must also be excluded from Git. `.env` and the default `data/` are
+already ignored. New files created by the CLIs use restrictive permissions.
+
+Successful sends store Telegram message IDs. Deduplication is per bot, recipient,
+and story; it does not merge the same job reposted in different stories.
+Telegram does not provide an idempotency key for `sendMessage`, so exact-once
+network delivery cannot be promised.
+
+| Delivery state | Meaning |
+| --- | --- |
+| `sent` | Telegram confirmed receipt; skip on later runs. |
+| `retry` | Wait for the persisted cooldown, then retry if still eligible. |
+| `rejected` | Fix credentials/permissions and explicitly resolve. |
+| `unknown` | The message may have arrived; inspect the chat before retrying. |
+| `sending` | The process stopped before saving an outcome; inspect the chat. |
+
+For an ambiguous application alert, mark it delivered after inspecting the chat:
 
 ```sh
 python notifier.py --resolve-story STORY_ID --chat-id CHAT_ID --resolution sent
 ```
 
-Or explicitly permit a retry if it was not delivered (also usable after fixing a
-rejected delivery):
+Or explicitly permit a retry if it did not arrive:
 
 ```sh
 python notifier.py --resolve-story STORY_ID --chat-id CHAT_ID --resolution retry
 python notifier.py
 ```
 
-The retry still respects story age, eligibility, and any bot-wide cooldown. Telegram
-`sendMessage` has no idempotency key, so exact-once delivery cannot be guaranteed
-across network failures. Holding ambiguous attempts reduces accidental duplicates.
-No messages are sent by `--status`, `--list-chats`, or the resolution commands.
-
-## Run the full pipeline
-
-After verifying Instagram login, local/hosted model access, and one Telegram
-delivery, run all three stages in order:
+For an ambiguous/rejected **review card**, inspect the review chat first, then:
 
 ```sh
-python pipeline.py
+python review.py --status
+python review.py --retry-card CARD_ID
 ```
 
-The runner uses the current Python environment and the project's `.env`, even when
-started from another directory. It reuses the saved Instagram session, classifier
-cache, and Telegram delivery database. It does not log in again or force cached
-classifications to rerun. Classification defaults to **auto mode**, overriding
-`LLM_MODE` for this command; select `--mode fast` or `--mode thorough` explicitly
-if desired. Provider and model still come from `.env` unless overridden.
-
-Preview the commands without running them, making requests, or writing files:
-
-```sh
-python pipeline.py --dry-run
-```
-
-The preview shows the plan only; it does not validate credentials or preview message
-contents. Use `python notifier.py --dry-run` for individual message previews.
-Before a live run, local preflight checks validate configuration, the saved
-Instagram session's account, and Telegram token/chat formats. They do not prove
-that remote services will accept those credentials.
-
-For continuous checks approximately every ten minutes:
-
-```sh
-python pipeline.py --watch
-```
-
-Keep the machine awake, connected, and the process running. For local inference,
-Ollama must also stay running. On a Mac, you can prevent idle system sleep while
-the watcher runs:
-
-```sh
-caffeinate -i python pipeline.py --watch
-```
-
-Use **Ctrl-C** to stop. This is a foreground watcher: closing its terminal,
-restarting the machine, or system sleep can interrupt it. It does not install a
-macOS LaunchAgent or automatically start after reboot. Ten minutes is the default
-interval between pass starts; a slow pass delays the next one. There is never
-more than one pass running in this watcher. A separate pipeline lock also rejects
-another pipeline using the same data directory. Existing stage locks still apply
-to standalone commands.
-
-Failures stop the current pass before later stages run. In watch mode, ordinary
-failures try again on the next interval using saved progress. An Instagram API
-error (collector exit code 2) stops the watcher entirely; inspect your account
-before manually restarting it. The runner never automatically password-logs in.
-Telegram cooldowns and ambiguous-delivery holds still apply; it cannot bypass them.
-A classification batch with errors holds delivery until a later successful pass.
-There are no Telegram failure alerts yet; failures appear in terminal output and
-the local stage records.
-
-Useful options:
-
-```sh
-# Saved stories only; no Instagram collection request.
-python pipeline.py --skip-collect
-
-# Collect and classify without sending Telegram messages.
-python pipeline.py --skip-notify
-
-# Catch up using older stories, with one recipient delivery at most.
-python pipeline.py --skip-collect --max-age-hours 72 --notify-limit 1
-
-# Limit model work per pass or override the model/provider.
-python pipeline.py --classification-limit 4 --provider ollama --model qwen3-vl:8b-instruct
-
-# Change watch interval (minimum 60 seconds) and per-stage time budget.
-python pipeline.py --watch --interval-seconds 600 --stage-timeout 3600
-```
-
-`--classification-limit` counts uncached stories; `--notify-limit` counts recipient
-delivery attempts (default 20). Telegram delivery defaults to a 24-hour story age;
-the runner does not restrict classification to that age. Each stage has a one-hour
-timeout by default. Timed-out stages stop the pass and preserve whatever had
-already been saved. Use a larger `--stage-timeout` for a large first classification
-batch if needed.
-
-Inspect the most recent executed pass:
-
-```sh
-python pipeline.py --status
-```
-
-Status is saved under `data/pipeline/last_run.json`, with each stage's outcome,
-exit code, timestamps, and elapsed time. `data/pipeline/events.jsonl` appends stage
-transitions across runs. Both use your custom `COLLECTOR_DATA_DIR` if set and are
-ignored by Git with the default data directory. Detailed child-script output stays
-in the terminal; it is not copied into the event log. Preflight failures appear in
-the terminal before a pass starts and do not overwrite the last executed pass.
-
-Pipeline exit codes: `0` successful one-shot pass, `1` failure, `2` Instagram stop,
-and `130` user interruption. A hard crash can leave a `running` snapshot; the next
-start warns and uses the existing caches and delivery tracking to recover. Check
-`python notifier.py --status` separately for any ambiguous Telegram deliveries.
+Stop the review watcher before using `--retry-card`; only one polling worker can run.
+Review decisions are `approved` or `skipped`, separate from card delivery state.
+Telegram 429 responses persist send cooldowns. Control polling respects Telegram's
+retry delay; authentication, permission, and polling conflicts stop the review worker.
+Neither component removes an existing webhook automatically.
 
 ## Troubleshooting
 
-- **Instagram login fails:** Review the sanitized `Instagram diagnostics` line and
-  check the official Instagram app for verification prompts. Do not repeatedly retry
-  a blocked login. For `needs_upgrade`, update dependencies and run `--login` again;
-  keep `data/session.json` so the existing device identity is preserved.
-- **Model unavailable:** Make sure Ollama is running, the model appears in
-  `ollama list`, and `LLM_BASE_URL` includes `/v1`.
-- **JSON response truncated:** Use `qwen3-vl:8b-instruct` instead of the plain `8b`
-  tag, and leave `OLLAMA_THINK=false`. Error records retain output-token counts,
-  reasoning-character counts, and any partial JSON; reasoning text itself isn't saved.
-- **Inference times out:** Local inference now defaults to 300 seconds. Increase
-  `LLM_TIMEOUT_SECONDS` in `.env` if you previously set 120, use a smaller model, or
-  switch to a hosted provider. Read timeouts and connection failures have separate
-  messages. Finished results remain saved; rerun without `--force` to resume.
-- **Request exceeds context size:** Use `LLM_PROVIDER=ollama` and increase
-  `LLM_CONTEXT_LENGTH` if needed. A larger context uses more memory.
-- **Fireworks rejects the request:** Check the full model/deployment path and account
-  access. HTTP 401 indicates authentication failure; HTTP 429 indicates throttling.
-  Use `FIREWORKS_API_KEY`, not an OpenAI key. Hosted context limits are controlled by
-  the provider, not `LLM_CONTEXT_LENGTH`. `--model` overrides need a provider-specific ID.
-- **No stories found:** Check `INSTAGRAM_TARGET`, `COLLECTOR_DATA_DIR`, and whether
-  collection completed successfully.
+- **No chat IDs:** message the exact bot whose token is in `.env`; stop other polling
+  workers before discovery. Another gateway or webhook can conflict.
+- **Zero eligible stories:** check age, links, job status, and review flags. Use an
+  explicit age override for old test data rather than disabling eligibility checks.
+- **Buttons do nothing:** keep `review.py --watch` running, use the configured private
+  account/chat, and inspect worker logs. A stale card requires a fresh review.
+- **Instagram rejects access:** inspect the account in the official app. Do not loop
+  password logins. For `needs_upgrade`, update dependencies and explicitly log in
+  again, preserving the saved session/device profile.
+- **Ollama unavailable or truncated JSON:** keep the server running, check `ollama list`,
+  and use the explicit Instruct tag with `OLLAMA_THINK=false`. Local request timeout
+  defaults to 300 seconds. More input/context can increase memory use and latency.
+- **Slow collection:** the collector uses normal one-second library pacing; network
+  and media sizes still matter. `request_timeout` in instagrapi is a pacing sleep,
+  while media HTTP requests use `read_timeout`.
+- **A pass failed:** inspect `python pipeline.py --status` and terminal output.
+  The event log records stages and exit codes; detailed child output stays in the
+  terminal. Local preflight errors happen before a pass and do not replace its status.
 
-`.env` and the default `data/` directory are Git-ignored. Keep passwords and session
-cookies private. Add any custom data directory inside the repository to `.gitignore`.
-Instagram access uses an unofficial client and can be restricted; complete coverage
-and a fixed detection interval are not guaranteed.
-
-## Run offline checks
+## Development
 
 ```sh
 python -m unittest discover -s tests -v
 ```
 
-These tests check the software without Instagram or model requests. They do not
-measure the model's classification accuracy.
+Tests use temporary files and fake network/model responses. They cover collection,
+media decoding, job-page extraction, provider contracts, eligibility, pipeline
+failures, delivery tracking, and review authorization. They do not measure general
+model accuracy or prove live Telegram/Instagram availability. Review cards and
+callbacks should be smoke-tested with your own bot after configuration.
+
+Source map: [collector.py](collector.py), [job_page.py](job_page.py),
+[classifier.py](classifier.py), [llama.py](llama.py), [media.py](media.py),
+[notifier.py](notifier.py), [review.py](review.py), [pipeline.py](pipeline.py).
+
+Writing drafts: [minimal blog post](docs/blog.md) · [X post](docs/x-post.md).
