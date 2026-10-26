@@ -7,7 +7,10 @@ The `swe_internship` label is intentionally inclusive: AI/ML, data science,
 robotics/autonomy, tools programming, developer productivity, scripting, automation,
 and any other internship with coding duties qualify. The title does not have to
 say Software Engineer; a hybrid business or engineering internship with Python,
-SQL, or other programming work can qualify too.
+SQL, or other programming work can qualify too. Coding does not have to be the
+main responsibility: even a smaller development, prototyping, dashboard-building,
+or workflow-automation component qualifies. Generic technical/AI descriptions
+without clear duties are held as uncertain rather than assumed to be non-coding.
 
 The program currently:
 
