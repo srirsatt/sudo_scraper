@@ -1,4 +1,4 @@
-"""Review held stories in a private Telegram chat with Approve / Skip buttons."""
+"""Handle Telegram subscriptions and private Approve / Skip review buttons."""
 import argparse
 from contextlib import closing
 import hashlib
@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from collector import ROOT, collector_lock, read_json
 from job_page import canonical_url
 from notifier import DeliveryStore, TelegramClient, TelegramControlError, candidates, notify
+from subscriptions import handle_subscription, recipient_chats
 
 LOG = logging.getLogger("review")
 
@@ -238,6 +239,7 @@ def poll(data_dir, target, chat, user, client, store, timeout=0):
             continue
         if update["update_id"] < offset:
             continue
+        subscription = handle_subscription(update.get("message"))
         query = update.get("callback_query")
         if isinstance(query, dict):
             text = handle_callback(query, data_dir, target, chat, user, client, store)
@@ -246,15 +248,20 @@ def poll(data_dir, target, chat, user, client, store, timeout=0):
             except (TelegramControlError, KeyError):
                 LOG.warning("Review persisted; couldn't acknowledge a callback.")
         store.advance(client.bot, update["update_id"] + 1)
+        offset = update["update_id"] + 1
+        if subscription:
+            # Persist subscription and offset before the best-effort confirmation.
+            # A lost reply must not replay /start or /stop after a later command.
+            result = client.send(*subscription)
+            if result["state"] != "sent":
+                LOG.warning("Subscription saved; confirmation was not confirmed (%s).", result["state"])
 
 
 def deliver_approved(data_dir, target, max_age, client, store):
     approved = {row["story"] for row in store.rows(client.bot) if row["target"] == target and row["decision"] == "approved"}
-    chats = list(dict.fromkeys(chat.strip() for chat in os.getenv("TELEGRAM_CHAT_IDS", "").split(",") if chat.strip()))
+    chats = recipient_chats()
     if not approved or not chats:
         return
-    if any(not re.fullmatch(r"-?[0-9]+", chat) for chat in chats):
-        raise ValueError("TELEGRAM_CHAT_IDS must contain numeric recipient IDs.")
     try:
         with collector_lock(data_dir / "telegram"):
             with closing(DeliveryStore(data_dir / "telegram" / "deliveries.sqlite3")) as deliveries:
@@ -267,7 +274,7 @@ def deliver_approved(data_dir, target, max_age, client, store):
 def main():
     load_dotenv(ROOT / ".env")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--watch", action="store_true", help="Keep polling buttons and queuing new review cards")
+    parser.add_argument("--watch", action="store_true", help="Keep handling signups, polling buttons, and queuing review cards")
     parser.add_argument("--dry-run", action="store_true", help="Preview without network requests or disk writes")
     parser.add_argument("--status", action="store_true", help="Show saved review state")
     parser.add_argument("--retry-card", help="Retry an ambiguous/rejected card after checking your chat")
@@ -307,6 +314,7 @@ def main():
                 if args.retry_card:
                     store.retry(client.bot, args.retry_card)
                     return 0
+                LOG.info("Telegram worker ready; private /start and /stop manage alert subscriptions.")
                 while True:
                     try:
                         poll(data_dir, target, chat, user, client, store)

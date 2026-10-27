@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from collector import ROOT, read_json, write_json
 from llama import ModelConfig
 from notifier import TelegramClient
+from subscriptions import recipient_chats
 
 LOG = logging.getLogger("pipeline")
 
@@ -77,9 +78,7 @@ def preflight(args, data_dir):
     ModelConfig.from_env(model_override=args.model, provider_override=args.provider, mode_override=args.mode)
     if not args.skip_notify:
         TelegramClient(os.getenv("TELEGRAM_BOT_TOKEN", "").strip())
-        chats = [chat.strip() for chat in os.getenv("TELEGRAM_CHAT_IDS", "").split(",") if chat.strip()]
-        if not chats or any(not re.fullmatch(r"-?[0-9]+", chat) for chat in chats):
-            raise ValueError("Set numeric TELEGRAM_CHAT_IDS before running delivery.")
+        recipient_chats()  # Validate; an empty audience can subscribe via /start later.
 
 
 # 3. Persist stage transitions before/after execution. Child logs stay on the

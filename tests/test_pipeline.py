@@ -26,6 +26,9 @@ class PipelineTests(unittest.TestCase):
         self.temp = TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        patcher = patch("subscriptions.ROOT", self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.steps = [("collect", ["python", "collector.py"]),
                       ("classify", ["python", "classifier.py"]),
                       ("notify", ["python", "notifier.py"])]
@@ -155,6 +158,10 @@ class PipelineTests(unittest.TestCase):
     def test_preflight_skip_flags_do_not_require_unused_credentials(self):
         with patch.dict(os.environ, {}, clear=True):
             preflight(options(skip_collect=True, skip_notify=True), self.root)
+
+    def test_preflight_accepts_empty_audience_waiting_for_signup(self):
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "123:test"}, clear=True):
+            preflight(options(skip_collect=True), self.root)
 
     def cli(self, *arguments):
         with patch.dict(os.environ, {"COLLECTOR_DATA_DIR": str(self.root / "data")}, clear=True), \

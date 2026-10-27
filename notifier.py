@@ -20,6 +20,7 @@ from pillow_heif import register_heif_opener
 
 from collector import ROOT, collector_lock
 from job_page import canonical_url
+from subscriptions import recipient_chats
 
 LOG = logging.getLogger("notifier")
 register_heif_opener()
@@ -305,9 +306,9 @@ def main():
             data_dir = ROOT / data_dir
         directory = data_dir / "telegram"
         readonly = args.dry_run or args.status
-        chats = args.chat_id if args.chat_id else os.getenv("TELEGRAM_CHAT_IDS", "").split(",")
+        chats = args.chat_id if args.chat_id else recipient_chats()
         chats = list(dict.fromkeys(chat.strip() for chat in chats if chat.strip()))
-        if not args.status and (not chats or any(not re.fullmatch(r"-?[0-9]+", chat) for chat in chats)):
+        if not args.status and any(not re.fullmatch(r"-?[0-9]+", chat) for chat in chats):
             raise ValueError("Set numeric TELEGRAM_CHAT_IDS (comma-separated), or use --chat-id.")
         if args.resolve_story and (not args.chat_id or len(chats) != 1):
             raise ValueError("Resolution requires exactly one --chat-id.")

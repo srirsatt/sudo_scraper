@@ -154,8 +154,31 @@ to reply. Use the returned numeric ID:
 TELEGRAM_CHAT_IDS=123456789
 ```
 
-For friends, add comma-separated IDs; each person must first start the bot. You can
-also add the bot to a group or make it a channel administrator with posting rights.
+For friends, share `https://t.me/YOUR_BOT_USERNAME?start=internships` and keep
+`python review.py --watch` running (configure the private reviewer below first).
+Opening the link and pressing **Start** sends `/start internships`; the worker
+automatically adds that person's private chat ID to `TELEGRAM_CHAT_IDS` in `.env`
+and confirms their subscription. `/start` without a link works too. Simply viewing
+the link without starting the bot does not subscribe anyone. See Telegram's
+[deep-link documentation](https://core.telegram.org/bots/features#deep-linking).
+
+Subscribers can send `/stop` to remove themselves, or `/start` to join again.
+New subscribers receive eligible recent postings on upcoming delivery passes,
+within the normal age window and per-pass limits. Existing delivery history is
+preserved when someone rejoins. A delivery already in progress may still finish
+after `/stop`. Signup is open to anyone who starts the bot in a private chat;
+subscribers cannot approve or skip your review cards.
+
+The worker atomically updates only the recipient setting, preserving credentials
+and reviewer settings. `.env` must be writable. Recipients are read fresh for each
+delivery pass without restarting either watcher. For **this setting only**, a
+value in `.env` takes precedence over the process environment, including an empty
+value after everyone unsubscribes. `--chat-id` still explicitly overrides it.
+An empty audience is allowed while waiting for signups. Stop the worker before
+manually editing `.env` to avoid overwriting a concurrent signup.
+
+You can also manually add comma-separated IDs for groups/channels; add the bot to
+the group or make it a channel administrator with posting rights.
 Use a dedicated bot for this project: the review worker owns Telegram update polling
 and must not share it with Hermes or another bot gateway/webhook.
 
@@ -255,7 +278,7 @@ caffeinate -i python pipeline.py --watch
 ```
 
 ```sh
-# Terminal 2: review new held stories and handle button taps.
+# Terminal 2: handle signups, review new held stories, and handle button taps.
 source .venv/bin/activate
 caffeinate -i python review.py --watch
 ```
